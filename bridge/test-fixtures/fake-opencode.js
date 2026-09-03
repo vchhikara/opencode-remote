@@ -13,6 +13,7 @@ const portIdx = args.indexOf('--port');
 const port = portIdx !== -1 ? parseInt(args[portIdx + 1], 10) : 4096;
 
 let sessionCounter = 0;
+const knownSessions = new Set(); // ids ever returned by POST /session, for GET /session/:id existence checks
 
 // Records every inbound request this fixture receives, readable via
 // GET /__requests, so tests can assert the bridge called the expected
@@ -67,10 +68,28 @@ function dispatch(req, res, url) {
     res.end('{}');
     return;
   }
+  if (req.method === 'GET' && url === '/session') {
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify([...knownSessions].map(id => ({ id, title: `Session ${id}`, time: { updated: 1700000000000 } }))));
+    return;
+  }
   if (req.method === 'POST' && url === '/session') {
     sessionCounter++;
+    const id = `ses_fake_${sessionCounter}`;
+    knownSessions.add(id);
     res.writeHead(200, { 'content-type': 'application/json' });
-    res.end(JSON.stringify({ id: `ses_fake_${sessionCounter}` }));
+    res.end(JSON.stringify({ id }));
+    return;
+  }
+  if (req.method === 'GET' && /^\/session\/[^/]+$/.test(url)) {
+    const id = url.split('/')[2];
+    if (knownSessions.has(id)) {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ id, title: `Session ${id}` }));
+    } else {
+      res.writeHead(404, { 'content-type': 'application/json' });
+      res.end('{}');
+    }
     return;
   }
   if (req.method === 'POST' && /^\/session\/[^/]+\/message$/.test(url)) {
@@ -81,6 +100,14 @@ function dispatch(req, res, url) {
   if (req.method === 'GET' && /^\/session\/[^/]+\/diff$/.test(url)) {
     res.writeHead(200, { 'content-type': 'application/json' });
     res.end('[]');
+    return;
+  }
+  if (req.method === 'POST' && /^\/session\/[^/]+\/fork$/.test(url)) {
+    sessionCounter++;
+    const id = `ses_fake_${sessionCounter}`;
+    knownSessions.add(id);
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ id }));
     return;
   }
   if (req.method === 'POST' && /^\/session\/[^/]+\/abort$/.test(url)) {

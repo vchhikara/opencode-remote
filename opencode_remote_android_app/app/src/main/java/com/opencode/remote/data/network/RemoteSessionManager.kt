@@ -81,6 +81,12 @@ class RemoteSessionManager(
     private val _pendingQuestion = MutableStateFlow<QuestionRequestDto?>(null)
     val pendingQuestion: StateFlow<QuestionRequestDto?> = _pendingQuestion.asStateFlow()
 
+    private val _sessions = MutableStateFlow<List<SessionDto>>(emptyList())
+    val sessions: StateFlow<List<SessionDto>> = _sessions.asStateFlow()
+
+    private val _activeSessionId = MutableStateFlow<String?>(null)
+    val activeSessionId: StateFlow<String?> = _activeSessionId.asStateFlow()
+
     private val _terminalOutput = MutableSharedFlow<String>(extraBufferCapacity = 100)
     val terminalOutput: SharedFlow<String> = _terminalOutput.asSharedFlow()
 
@@ -157,6 +163,8 @@ class RemoteSessionManager(
                 "STREAM_TOOL_RESULT" -> frame.decodePayload<StreamToolResultDto>(json)?.let {
                     _streamingMessage.update { (it ?: StreamingMessageDto()).copy(runningTool = null) }
                 }
+                "SESSION_LIST" -> frame.decodePayload<List<SessionDto>>(json)?.let { _sessions.value = it }
+                "SESSION_SWITCHED" -> frame.decodePayload<SessionSwitchedDto>(json)?.let { _activeSessionId.value = it.id }
                 "PERMISSION_REQUEST" -> frame.decodePayload<PermissionRequestDto>(json)?.let { _pendingPermission.value = it }
                 "QUESTION_REQUEST" -> frame.decodePayload<QuestionRequestDto>(json)?.let { _pendingQuestion.value = it }
                 "AGENT_STATE" -> frame.decodePayload<String>(json)?.let {
@@ -240,6 +248,16 @@ class RemoteSessionManager(
         sendRaw("QUESTION_REPLY", json.encodeToJsonElement(QuestionReplyPayload(questionId, answer)))
         if (_pendingQuestion.value?.questionId == questionId) _pendingQuestion.value = null
     }
+
+    fun listSessions() = sendRaw("LIST_SESSIONS")
+
+    fun switchSession(sessionId: String) = sendString("SWITCH_SESSION", sessionId)
+
+    fun newSession(title: String? = null) {
+        sendRaw("NEW_SESSION", json.encodeToJsonElement(NewSessionPayload(title)))
+    }
+
+    fun forkSession(sessionId: String) = sendString("FORK_SESSION", sessionId)
 
     fun runTerminal(command: String) = sendString("TERMINAL", command)
 

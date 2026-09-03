@@ -19,6 +19,7 @@ sealed class NavRoutes(val route: String) {
         object Diff : Tab("diff")
         object Terminal : Tab("terminal")
         object Tasks : Tab("tasks")
+        object Sessions : Tab("sessions")
         object Git : Tab("git")
         object Settings : Tab("settings")
     }
