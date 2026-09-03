@@ -37,14 +37,14 @@ correct.
 | 2 | 2.2.3 KILL_TASK produces visible "Cancelled" message | Done | `grep -n "case 'KILL_TASK'" -A 12 bridge/main.js` shows pushChatMessage call; permission.test.js "KILL_TASK pushes a Cancelled chat message" passes | | 33b5ff1 |
 | 2 | 2.3.1 [VERIFY LIVE] mid-task steering / message queuing | Done | Live probe: two concurrent `POST /session/{id}/message` on same session both → HTTP 200, both completed. Bridge test "two back-to-back PROMPTs..." passes | Server queues rather than rejects; bridge already had no guard blocking concurrent prompts — no code change needed | d8bbc69 |
 | 2 | Phase 2 merge gate (baseline rerun) | Done | bridge npm test → 20/20; `testDebugUnitTest` → BUILD SUCCESSFUL; `assembleDebug` → BUILD SUCCESSFUL | | 24b8f5f |
-| 3 | 3.1.1 Bridge LIST_SESSIONS | Not started | | | |
-| 3 | 3.1.2 Bridge SWITCH_SESSION | Not started | | | |
-| 3 | 3.1.3 Bridge NEW_SESSION | Not started | | | |
-| 3 | 3.2.1 Bridge persist ocSessionId across restarts | Not started | | | |
-| 3 | 3.3.1 Android session DTOs/flows | Not started | | | |
-| 3 | 3.3.2 Android session picker screen | Not started | | | |
-| 3 | 3.4.1 Stretch: session forking | Not started | | | |
-| 3 | Phase 3 merge gate (baseline rerun) | Not started | | | |
+| 3 | 3.1.1 Bridge LIST_SESSIONS | Done | `bridge npm test` → sessions.test.js "LIST_SESSIONS returns the sessions known to opencode serve" passes | | e843f96 |
+| 3 | 3.1.2 Bridge SWITCH_SESSION | Done | `bridge npm test` → "SWITCH_SESSION changes the session used by the next PROMPT" passes, asserts next PROMPT hits `/session/<switched>/message` | | e843f96 |
+| 3 | 3.1.3 Bridge NEW_SESSION | Done | `bridge npm test` → "NEW_SESSION creates a session and switches to it" passes | | e843f96 |
+| 3 | 3.2.1 Bridge persist ocSessionId across restarts | Done | `bridge npm test` → "session id persists across a bridge restart in the same workspace" passes | Persisted to `.opencode-remote-session.json` in workspace root; `ensureSession()` trusts a persisted id at face value (no existence-check — real opencode's session storage is independent of any one serve process) | e843f96 |
+| 3 | 3.3.1 Android session DTOs/flows | Done | `gradlew :app:testDebugUnitTest --tests "*SessionManagerTest*"` → BUILD SUCCESSFUL (new testSessionListAndSwitchedEvents) | SessionDto/SessionSwitchedDto/NewSessionPayload + sessions/activeSessionId StateFlows + listSessions/switchSession/newSession methods | e843f96 |
+| 3 | 3.3.2 Android session picker screen | Done | `gradlew :app:assembleDebug` → BUILD SUCCESSFUL | New Sessions tab (SessionsScreen.kt) wired into NavRoutes/MainDashboardScreen; manual on-device tap-through not performed (no device connected) | e843f96 |
+| 3 | 3.4.1 Stretch: session forking | Done | `bridge npm test` → "FORK_SESSION creates a forked session and switches to it (Task 3.4 stretch)" passes; `gradlew :app:assembleDebug` → BUILD SUCCESSFUL | FORK_SESSION bridge case + fixture `/session/:id/fork` route + Android forkSession()/fork IconButton in SessionsScreen | e843f96 |
+| 3 | Phase 3 merge gate (baseline rerun) | Done | `bridge npm test` → 25/25 pass; `gradlew :app:testDebugUnitTest` → BUILD SUCCESSFUL; `gradlew :app:assembleDebug` → BUILD SUCCESSFUL | Merged into remote-control-groundwork | e843f96 |
 | 4 | 4.1.1 Bridge PTY-backed TERMINAL | Not started | | | |
 | 4 | 4.1.2 Bridge real TERMINAL_RESIZE | Not started | | | |
 | 4 | 4.2.1 Android streaming terminal output (append not replace) | Not started | | | |
