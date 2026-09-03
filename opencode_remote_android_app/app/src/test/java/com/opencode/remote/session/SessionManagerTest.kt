@@ -45,6 +45,7 @@ class SessionManagerTest {
         assertTrue(manager.fileTree.value.isEmpty())
         assertEquals(null, manager.fileContent.value)
         assertEquals(null, manager.pendingDiff.value)
+        assertTrue(manager.pendingDiffs.value.isEmpty())
         assertEquals(null, manager.streamingMessage.value)
         assertEquals(null, manager.pendingPermission.value)
         assertEquals(null, manager.pendingQuestion.value)
@@ -118,6 +119,32 @@ class SessionManagerTest {
         // Bridge's fileName/diffText map to filePath/patch.
         simulateIncomingMessage(createFrame("FILE_DIFF", BridgeFileDiffDto("pending_changes.diff", "patch text"), json))
         assertEquals(FileDiffDto("pending_changes.diff", "patch text"), manager.pendingDiff.value)
+    }
+
+    @Test
+    fun testMultipleFileDiffsAllAppearInPendingDiffsList() = testScope.runTest {
+        // Task 5.1: two FILE_DIFF frames for different files must both be
+        // retained, not just the last one received.
+        simulateIncomingMessage(createFrame("FILE_DIFF", BridgeFileDiffDto("a.txt", "patch a"), json))
+        simulateIncomingMessage(createFrame("FILE_DIFF", BridgeFileDiffDto("b.txt", "patch b"), json))
+        assertEquals(
+            listOf(FileDiffDto("a.txt", "patch a"), FileDiffDto("b.txt", "patch b")),
+            manager.pendingDiffs.value
+        )
+
+        // acceptDiff on one removes only that entry.
+        manager.acceptDiff("a.txt")
+        assertEquals(listOf(FileDiffDto("b.txt", "patch b")), manager.pendingDiffs.value)
+
+        manager.rejectDiff("b.txt")
+        assertTrue(manager.pendingDiffs.value.isEmpty())
+    }
+
+    @Test
+    fun testFileDiffForSamePathReplacesEarlierEntry() = testScope.runTest {
+        simulateIncomingMessage(createFrame("FILE_DIFF", BridgeFileDiffDto("a.txt", "patch v1"), json))
+        simulateIncomingMessage(createFrame("FILE_DIFF", BridgeFileDiffDto("a.txt", "patch v2"), json))
+        assertEquals(listOf(FileDiffDto("a.txt", "patch v2")), manager.pendingDiffs.value)
     }
 
     @Test
