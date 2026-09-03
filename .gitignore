@@ -40,3 +40,15 @@ token-optimizer/
 # Local IDE project state and opencode CLI scratch dirs (per-machine, not source)
 /.idea/
 .opencode/
+
+# Bridge runtime state (session persistence, audit log, device tokens) -
+# generated at runtime by bridge/main.js, not source
+bridge/.opencode-remote-session.json
+bridge/.opencode-remote-audit.log
+bridge/.opencode-remote-devices.json
+bridge/.device-tokens.json
+
+# Scratch content an opencode agent creates in a workspace during manual
+# testing, and manual-verification screenshots (not project deliverables)
+/welcome.md
+/phase8_verify/

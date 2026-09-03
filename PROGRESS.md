@@ -27,7 +27,7 @@ correct.
 | 1 | 1.1.2 Bridge relay STREAM_* frames | Done | `cd bridge && npm test` → 15 pass/0 fail, incl. new `stream.test.js` asserting all 3 STREAM_* frame types observed over real WS | Used fake-opencode.js fixture (moved to test-fixtures/ — node --test auto-discovers test/**/*.js) | 7527987 |
 | 1 | 1.1.3 Confirm final CHAT_MESSAGE/FILE_DIFF unchanged | Done | `grep -n "pushChatMessage(text.trim()" bridge/main.js` → match at line 321 | | 7527987 |
 | 1 | 1.2.1 Android streaming state in RemoteSessionManager | Done | `gradlew :app:testDebugUnitTest --tests "*SessionManagerTest*"` → BUILD SUCCESSFUL (3 new tests) | Added StreamTextDeltaDto/StreamToolCallDto/StreamToolResultDto/StreamingMessageDto | c773746 |
-| 1 | 1.2.2 Android ChatScreen streaming bubble + tool status | Done (automated part) | `gradlew :app:assembleDebug -Dorg.gradle.java.home=...` → BUILD SUCCESSFUL | Manual on-device confirmation NOT performed this session (no device connected) — automated exit criterion is the merge gate per plan; manual check remains outstanding | c773746 |
+| 1 | 1.2.2 Android ChatScreen streaming bubble + tool status | Done | `gradlew :app:assembleDebug -Dorg.gradle.java.home=...` → BUILD SUCCESSFUL | **Manually verified live post-merge** on a real Samsung SM-S931B over WiFi (adb-driven): sent a real prompt from the phone, agent state badge transitioned IDLE → THINKING... → IDLE, and the assistant's real LLM response rendered as a chat bubble, sourced from a genuine `opencode serve` round trip (not the test fixture). Closes the manual-verification gap noted here previously. | c773746 (live-verified, no new commit) |
 | 1 | Phase 1 merge gate (baseline rerun) | Done | bridge npm test → 15/15; `testDebugUnitTest` → BUILD SUCCESSFUL; `assembleDebug` → BUILD SUCCESSFUL | | c773746 |
 | 2 | 2.1.1 Bridge relay PERMISSION_REQUEST/QUESTION_REQUEST | Done | `bridge npm test` → permission.test.js 1st test pass | Envelope key read defensively (properties\|\|data) — live permission event not observed in probe (bash ran without approval prompt); shape is schema-confirmed only | 33b5ff1 |
 | 2 | 2.1.2 Bridge handle PERMISSION_REPLY/QUESTION_REPLY | Done | `bridge npm test` → permission.test.js 2nd/3rd tests pass, asserting real POST calls via fixture's `/__requests` log | | 33b5ff1 |
@@ -48,7 +48,7 @@ correct.
 | 4 | 4.1.1 Bridge PTY-backed TERMINAL | Done | `bridge npm test` → terminal.test.js "TERMINAL command creates a PTY and streams output back incrementally" passes (asserts >1 TERMINAL_OUTPUT frame, POST /pty called) | Live-confirmed transport is a WebSocket at `/pty/{id}/connect` (not SSE/polling); NUL-prefixed control frames filtered out | 6b46790 |
 | 4 | 4.1.2 Bridge real TERMINAL_RESIZE | Done | `bridge npm test` → "TERMINAL_RESIZE calls the PTY resize endpoint for the active PTY" passes | `PUT /pty/{id} {size:{rows,cols}}` confirmed in live OpenAPI schema; resizes the most-recently-created PTY (`activePtyId`) | 6b46790 |
 | 4 | 4.2.1 Android streaming terminal output (append not replace) | Done | `grep -n "terminalOutput" ...` → single append-only consumer (`outputLines = outputLines + terminalOutput`) already present; no change needed | | 6b46790 |
-| 4 | 4.2.2 Android wire TERMINAL_RESIZE to real size changes | Done | `grep -n "TERMINAL_RESIZE" ...RemoteSessionManager.kt` shows `resizeTerminal()`; `gradlew :app:assembleDebug` → BUILD SUCCESSFUL | Wired to `onSizeChanged` on the terminal surface (approximate monospace cols/rows from pixel size) | 6b46790 |
+| 4 | 4.2.2 Android wire TERMINAL_RESIZE to real size changes | Done | `grep -n "TERMINAL_RESIZE" ...RemoteSessionManager.kt` shows `resizeTerminal()`; `gradlew :app:assembleDebug` → BUILD SUCCESSFUL | Wired to `onSizeChanged` on the terminal surface (approximate monospace cols/rows from pixel size). **Manually verified live post-merge** on a real Samsung SM-S931B over WiFi (adb-driven): entering the Terminal tab fired a real `TERMINAL_RESIZE` frame on the bridge, and running `echo hello-from-my-phone` from the phone executed on a real PTY and streamed `hello-from-my-phone` back to the on-screen console — closes this task's manual-verification gap. | (live-verified, no new commit) |
 | 4 | Phase 4 merge gate (baseline rerun) | Done | `bridge npm test` → 26/26 pass; `gradlew :app:testDebugUnitTest` → BUILD SUCCESSFUL; `gradlew :app:assembleDebug` → BUILD SUCCESSFUL | Merged into remote-control-groundwork | 6b46790 |
 | 5 | 5.1.1 Android pendingDiffs list (not single value) | Done | `gradlew :app:testDebugUnitTest --tests "*SessionManagerTest*"` → BUILD SUCCESSFUL (new testMultipleFileDiffsAllAppearInPendingDiffsList, testFileDiffForSamePathReplacesEarlierEntry) | `pendingDiff` kept as a derived first-entry accessor, updated in lockstep (not via `.stateIn`, which leaked an uncompleted collector into test scope — fixed before landing) | e0c466e |
 | 5 | 5.1.2 Android UI renders all pending diffs | Done | `gradlew :app:assembleDebug` → BUILD SUCCESSFUL; `grep -rn "pendingDiff\b" app/src/main` shows only the documented derived accessor remaining | DiffReviewScreen renders a TabRow, one tab per pending diff | e0c466e |
@@ -115,8 +115,17 @@ command, terminal command, and permission/question decision.
   phases (permission/question cards, session picker, terminal, diff tabs,
   workspace list, devices/revoke screen, audit log view, etc.) was verified
   by unit test + a successful `assembleDebug` build, not by tapping through
-  it on a real device/emulator (none was connected in this environment).
-  This is flagged per-row above rather than claimed as fully done.
+  it on a real device/emulator, at merge time (none was connected in this
+  environment). This is flagged per-row above rather than claimed as fully
+  done. **Update**: a real Samsung SM-S931B was connected in a later session
+  (adb-driven, over WiFi to the bridge on the LAN) and used to close two of
+  these gaps live: the chat prompt round-trip (real `opencode serve` call,
+  agent state transitions, response rendering — Task 1.2.2) and the remote
+  terminal (real PTY execution + `TERMINAL_RESIZE` — Tasks 4.1.1/4.2.2), both
+  now marked verified above. The rest of the per-row manual-verification
+  gaps (permission/question UI, session picker, devices/revoke screen, audit
+  log view, reconnect-on-resume) remain open — device availability was
+  incidental to this update, not a full device-verification pass.
 
 ## Live-API findings (filled in during Phase 0, referenced by later phases)
 
