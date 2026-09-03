@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<network-security-config>
+    <!-- By default, disallow cleartext traffic -->
+    <base-config cleartextTrafficPermitted="true" />
+
+    <!-- Permit cleartext HTTP / WS traffic ONLY to local and LAN subnets -->
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="true">localhost</domain>
+        <domain includeSubdomains="true">127.0.0.1</domain>
+        <domain includeSubdomains="true">10.0.2.2</domain>
+        <domain includeSubdomains="true">10.in-addr.arpa</domain>
+        <domain includeSubdomains="true">168.192.in-addr.arpa</domain>
+        <domain includeSubdomains="true">192.168.31.223</domain>
+    </domain-config>
+</network-security-config>

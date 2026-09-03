@@ -17,8 +17,20 @@ let sessions = {};
 let activeWorkspace = process.cwd();
 let pendingDiffs = {};
 let tasks = {};
-let opencodeProc = null;
 const WORKSPACE_ROOT = process.env.WORKSPACE_ROOT || process.cwd();
+
+// --- OpenCode server (persistent, one session reused across prompts) ---
+// Previously every PROMPT spawned a fresh `opencode run` subprocess with no
+// session id, so nothing survived between prompts and a hung/unreachable model
+// provider meant the process just sat there forever with no error surfaced.
+// Now a single `opencode serve` process stays up for the bridge's lifetime and
+// prompts are sent into one reused session via its HTTP API.
+const OC_SERVE_PORT = parseInt(process.env.OC_SERVE_PORT || '4096', 10);
+const OC_PROMPT_TIMEOUT_MS = parseInt(process.env.OC_PROMPT_TIMEOUT_MS || '120000', 10);
+const ocBaseUrl = `http://127.0.0.1:${OC_SERVE_PORT}`;
+let ocServeProc = null;
+let ocReadyPromise = null;
+let ocSessionId = null;
 
 function resolveInsideWorkspace(p) {
   const abs = path.resolve(activeWorkspace, p);
@@ -126,66 +138,128 @@ function pushTaskRemoved(id) {
   broadcast('TASK_REMOVED', id);
 }
 
-// --- OpenCode subprocess ---
-function startOpenCode() {
-  if (opencodeProc) { opencodeProc.kill(); opencodeProc = null; }
-  pushAgentState('Idle');
-}
+// --- OpenCode server lifecycle ---
 
-function runPrompt(prompt) {
-  pushAgentState('Thinking...');
-  const proc = spawn(OPCODE, ['run', '--format', 'json', '--auto', '--dir', activeWorkspace, prompt], {
+// Starts (or restarts) the persistent `opencode serve` process bound to
+// activeWorkspace's directory. Called at bridge startup and whenever the
+// workspace changes (the server's project directory is fixed to its own cwd
+// at spawn time, so a workspace switch means a fresh process — and thus a
+// fresh session, same as switching directories used to do before).
+function startOpenCodeServer() {
+  if (ocServeProc) { ocServeProc.kill(); ocServeProc = null; }
+  ocSessionId = null;
+
+  const proc = spawn(OPCODE, ['serve', '--port', String(OC_SERVE_PORT), '--hostname', '127.0.0.1'], {
     cwd: activeWorkspace,
-    env: { ...process.env, OPENCODE_CLI_DISABLE_PROMPT: '1' }
+    env: process.env
   });
-  let buffer = '';
-  let diffAccum = '';
-  let lastText = '';
-
-  proc.stdout.on('data', chunk => {
-    buffer += chunk.toString();
-    const lines = buffer.split('\n');
-    buffer = lines.pop() || '';
-    for (const line of lines) {
-      if (!line.trim()) continue;
-      try {
-        const evt = JSON.parse(line);
-        if (evt.type === 'text' && evt.text) {
-          lastText += evt.text;
-        }
-        if (evt.type === 'tool' && evt.tool === 'file.edit') {
-          diffAccum += evt.diff || evt.content || '';
-        }
-        if (evt.type === 'agent' && evt.state) {
-          pushAgentState(evt.state);
-        }
-      } catch {}
+  proc.stderr.on('data', d => console.log(`  [opencode serve] ${d.toString().trim()}`));
+  proc.on('error', e => console.log(`  ! failed to start opencode serve: ${e.message}`));
+  proc.on('exit', code => {
+    if (proc === ocServeProc) {
+      console.log(`  ! opencode serve exited unexpectedly (code ${code})`);
+      ocServeProc = null;
+      ocReadyPromise = null;
     }
   });
+  ocServeProc = proc;
 
-  proc.stderr.on('data', chunk => {
-    pushTerminalLine(chunk.toString());
+  ocReadyPromise = (async () => {
+    for (let i = 0; i < 60; i++) {
+      try {
+        const res = await fetch(`${ocBaseUrl}/config`, { signal: AbortSignal.timeout(1000) });
+        if (res.ok) return true;
+      } catch {}
+      await new Promise(r => setTimeout(r, 500));
+    }
+    console.log('  ! opencode serve did not become ready within 30s');
+    return false;
+  })();
+
+  return ocReadyPromise;
+}
+
+async function ocFetch(pathname, opts = {}) {
+  const timeoutMs = opts.timeoutMs || 15000;
+  const res = await fetch(`${ocBaseUrl}${pathname}`, {
+    method: opts.method || 'GET',
+    headers: { 'Content-Type': 'application/json' },
+    body: opts.body,
+    signal: AbortSignal.timeout(timeoutMs)
   });
+  return res;
+}
 
-  proc.on('close', code => {
-    if (lastText) pushChatMessage(lastText.trim(), false, 'Generated code', true);
-    if (diffAccum) pushFileDiff('pending_changes.diff', diffAccum);
-    pushAgentState('Idle');
-  });
+async function ensureSession() {
+  if (ocSessionId) return ocSessionId;
+  const res = await ocFetch('/session', { method: 'POST', body: JSON.stringify({ title: 'OpenCode Remote' }) });
+  if (!res.ok) throw new Error(`Could not create opencode session (${res.status})`);
+  const session = await res.json();
+  ocSessionId = session.id;
+  return ocSessionId;
+}
 
-  proc.on('error', err => {
-    pushChatMessage(`Error: ${err.message}`, false, 'Error', false);
-    pushAgentState('Idle');
-  });
-
-  opencodeProc = proc;
-  const task = { id: String(proc.pid), name: `Prompt: ${prompt.substring(0, 40)}`, pid: proc.pid, status: 'Running' };
-  tasks[proc.pid] = task;
+async function runPrompt(prompt) {
+  pushAgentState('Thinking...');
+  const taskId = `prompt-${Date.now()}`;
+  const task = { id: taskId, name: `Prompt: ${prompt.substring(0, 40)}`, status: 'Running' };
+  tasks[taskId] = task;
   pushTaskUpdated(task);
-  proc.on('close', () => {
-    delete tasks[proc.pid];
-    pushTaskRemoved(String(proc.pid));
-  });
+
+  try {
+    if (!ocServeProc) startOpenCodeServer();
+    await ocReadyPromise;
+    const sessionId = await ensureSession();
+    task.sessionId = sessionId;
+
+    const res = await ocFetch(`/session/${sessionId}/message`, {
+      method: 'POST',
+      timeoutMs: OC_PROMPT_TIMEOUT_MS,
+      body: JSON.stringify({ parts: [{ type: 'text', text: prompt }] })
+    });
+    if (!res.ok) {
+      const body = await res.text().catch(() => '');
+      throw new Error(`opencode server returned ${res.status}: ${body.slice(0, 300)}`);
+    }
+    const result = await res.json();
+    // A 200 here does not mean the prompt succeeded — a provider/auth failure
+    // (bad/missing API key, unreachable endpoint) comes back as HTTP 200 with
+    // result.info.error set and result.parts empty, not a non-2xx status.
+    const serverError = result.info && result.info.error;
+    if (serverError) {
+      const detail = (serverError.data && serverError.data.message) || serverError.name || 'unknown error';
+      pushChatMessage(`Error (${serverError.name || 'provider error'}): ${detail}`, false, 'Error', false);
+    } else {
+      const text = (result.parts || [])
+        .filter(p => p.type === 'text' && p.text)
+        .map(p => p.text)
+        .join('');
+      if (text) pushChatMessage(text.trim(), false, 'Generated response', true);
+    }
+
+    // Real per-file diffs from the session, replacing the old hardcoded
+    // single-file 'pending_changes.diff' name with the actual changed paths.
+    try {
+      const diffRes = await ocFetch(`/session/${sessionId}/diff`);
+      if (diffRes.ok) {
+        const files = await diffRes.json();
+        for (const f of files) {
+          if (f.file && f.patch) pushFileDiff(f.file, f.patch);
+        }
+      }
+    } catch (e) {
+      console.log(`  ! failed to fetch diff: ${e.message}`);
+    }
+  } catch (e) {
+    const message = e.name === 'TimeoutError' || e.name === 'AbortError'
+      ? `opencode did not respond within ${Math.round(OC_PROMPT_TIMEOUT_MS / 1000)}s — check the model/provider config on the bridge machine`
+      : `Error: ${e.message}`;
+    pushChatMessage(message, false, 'Error', false);
+  } finally {
+    delete tasks[taskId];
+    pushTaskRemoved(taskId);
+    pushAgentState('Idle');
+  }
 }
 
 // --- File tree ops ---
@@ -242,6 +316,9 @@ const wss = new WebSocketServer({ port: PORT }, () => {
   for (const ip of ips) printQr(ip);
   if (ips.length === 0) printQr('localhost');
   console.log(`  Workspace: ${activeWorkspace}\n`);
+  // opencode serve is started lazily on the first PROMPT (see runPrompt) rather
+  // than here, so a client that never sends a prompt (browsing files/git only,
+  // or a bridge test instance) never spawns it.
 });
 
 wss.on('connection', (ws, req) => {
@@ -300,6 +377,7 @@ wss.on('connection', (ws, req) => {
             ws.send(JSON.stringify({ eventType: 'ERROR', payload: { message: `Workspace outside allowed root: ${dir}` } }));
           } else if (fs.existsSync(resolved) && fs.statSync(resolved).isDirectory()) {
             activeWorkspace = resolved;
+            if (ocServeProc) startOpenCodeServer(); // already running -> restart bound to the new dir
             ws.send(JSON.stringify({ eventType: 'WORKSPACE_OPENED', payload: { path: resolved } }));
           } else {
             ws.send(JSON.stringify({ eventType: 'ERROR', payload: { message: `Workspace not found: ${dir}` } }));
@@ -376,7 +454,11 @@ wss.on('connection', (ws, req) => {
         const tid = String(payload);
         const task = tasks[tid];
         if (task) {
-          try { process.kill(task.pid); } catch {}
+          // Prompt tasks no longer have an OS pid to kill (they run inside the
+          // persistent opencode server) — abort the in-flight generation instead.
+          if (task.sessionId) {
+            ocFetch(`/session/${task.sessionId}/abort`, { method: 'POST' }).catch(() => {});
+          }
           delete tasks[tid];
           pushTaskRemoved(tid);
         }
@@ -418,6 +500,6 @@ wss.on('connection', (ws, req) => {
 
 process.on('SIGINT', () => {
   console.log('\n  Shutting down...');
-  if (opencodeProc) opencodeProc.kill();
+  if (ocServeProc) ocServeProc.kill();
   wss.close(() => process.exit(0));
 });
