@@ -13,6 +13,11 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 
+// True pill/stadium shape (corner radius = half the shorter side, so it stays a
+// full pill regardless of the badge's text length) — matches the rest of the
+// app's pilled buttons/chips instead of AgentStateBadge's old fixed 12dp corner.
+private val PillShape = RoundedCornerShape(percent = 50)
+
 /**
  * [agentState] is the bridge's raw status text ("Idle", "Thinking...", or whatever the
  * wrapped CLI happens to emit — see RemoteSessionManager.agentState). There's no fixed
@@ -23,19 +28,22 @@ import androidx.compose.ui.unit.dp
 @Composable
 fun AgentStateBadge(agentState: String, modifier: Modifier = Modifier) {
     val normalized = agentState.lowercase()
+    // Theme-derived container/on-container pairs instead of hardcoded RGB, so this
+    // follows the app's actual color scheme (and dark mode) rather than a fixed
+    // palette that clashed with it.
     val (backgroundColor, textColor) = when {
-        normalized.contains("idle") -> Color.Gray to Color.White
-        normalized.contains("think") -> Color.Blue to Color.White
-        normalized.contains("run") || normalized.contains("execut") -> Color(0xFFFFA500) to Color.White // Orange
-        normalized.contains("error") -> Color(0xFFF44336) to Color.White
-        else -> Color.LightGray to Color.Black
+        normalized.contains("idle") -> MaterialTheme.colorScheme.surfaceVariant to MaterialTheme.colorScheme.onSurfaceVariant
+        normalized.contains("think") -> MaterialTheme.colorScheme.primaryContainer to MaterialTheme.colorScheme.onPrimaryContainer
+        normalized.contains("run") || normalized.contains("execut") -> MaterialTheme.colorScheme.tertiaryContainer to MaterialTheme.colorScheme.onTertiaryContainer
+        normalized.contains("error") -> MaterialTheme.colorScheme.errorContainer to MaterialTheme.colorScheme.onErrorContainer
+        else -> MaterialTheme.colorScheme.secondaryContainer to MaterialTheme.colorScheme.onSecondaryContainer
     }
 
     Box(
         modifier = modifier
-            .clip(RoundedCornerShape(12.dp))
+            .clip(PillShape)
             .background(backgroundColor)
-            .padding(horizontal = 8.dp, vertical = 4.dp)
+            .padding(horizontal = 12.dp, vertical = 4.dp)
     ) {
         Text(
             text = agentState.uppercase(),
