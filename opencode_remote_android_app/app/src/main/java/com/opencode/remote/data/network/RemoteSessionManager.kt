@@ -113,6 +113,20 @@ class RemoteSessionManager(
     private val _gitStatus = MutableStateFlow<GitStatusDto?>(null)
     val gitStatus: StateFlow<GitStatusDto?> = _gitStatus.asStateFlow()
 
+    private val _devices = MutableStateFlow<List<DeviceDto>>(emptyList())
+    val devices: StateFlow<List<DeviceDto>> = _devices.asStateFlow()
+
+    private val _auditLog = MutableStateFlow<List<AuditLogEntryDto>>(emptyList())
+    val auditLog: StateFlow<List<AuditLogEntryDto>> = _auditLog.asStateFlow()
+
+    // Set when the bridge's CONNECTED payload carries a freshly issued
+    // per-device token (Task 8.1) in place of the pairing secret just used to
+    // connect — the caller (MainDashboardScreen, which owns tokenStorage)
+    // observes this to persist the new token so future connects use it
+    // instead of the (possibly now-invalid) pairing secret.
+    private val _issuedToken = MutableStateFlow<String?>(null)
+    val issuedToken: StateFlow<String?> = _issuedToken.asStateFlow()
+
     // The bridge's FILE_CONTENT reply carries no path, only the raw text — remember
     // what we last asked for so the UI-facing FileContentDto can be paired up.
     private var pendingFileRequestPath: String? = null
@@ -137,6 +151,12 @@ class RemoteSessionManager(
                     val wsFrame = json.decodeFromString<WebSocketFrame>(text)
                     when (wsFrame.eventType) {
                         "CONNECTED" -> {
+                            wsFrame.decodePayload<ConnectedPayload>(json)?.issuedToken?.let { fresh ->
+                                if (fresh != token) {
+                                    token = fresh
+                                    _issuedToken.value = fresh
+                                }
+                            }
                             handshakeOk = true
                             markConnected()
                         }
@@ -204,6 +224,8 @@ class RemoteSessionManager(
                     _tasks.update { it - id }
                 }
                 "GIT_STATUS" -> frame.decodePayload<GitStatusDto>(json)?.let { _gitStatus.value = it }
+                "DEVICE_LIST" -> frame.decodePayload<List<DeviceDto>>(json)?.let { _devices.value = it }
+                "AUDIT_LOG" -> frame.decodePayload<List<AuditLogEntryDto>>(json)?.let { _auditLog.value = it }
                 "ERROR" -> {
                     val msg = frame.decodePayload<ErrorPayload>(json)?.message ?: "Unknown error"
                     Log.e("RemoteSessionManager", "Server sent error: $msg")
@@ -294,6 +316,17 @@ class RemoteSessionManager(
     fun killTask(taskId: String) = sendString("KILL_TASK", taskId)
 
     fun runGit(command: String) = sendString("GIT", command)
+
+    /** Task 8.2.2: lists paired devices (never exposes raw tokens — see
+     *  [DeviceDto]); response lands in [devices]. */
+    fun listDevices() = sendRaw("LIST_DEVICES")
+
+    /** Task 8.2.1/8.2.2: revokes a paired device's token, closing its live
+     *  connection (if any) and rejecting any future reconnect with it. */
+    fun revokeToken(deviceId: String) = sendString("REVOKE_TOKEN", deviceId)
+
+    /** Task 8.4.2: fetches recent audit log entries; response lands in [auditLog]. */
+    fun fetchAuditLog() = sendRaw("FETCH_AUDIT_LOG")
 
     fun disconnect() {
         ws.disconnect()

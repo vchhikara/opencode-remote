@@ -15,7 +15,16 @@ import java.util.UUID
 data class ConnectPayload(val deviceName: String, val token: String)
 
 @Serializable
-data class ConnectedPayload(val sessionId: String, val deviceName: String)
+data class ConnectedPayload(
+    val sessionId: String,
+    val deviceName: String,
+    val deviceId: String? = null,
+    /** Present when the bridge just issued a fresh per-device token in
+     *  place of the pairing token that was used to connect (Task 8.1) — the
+     *  client must persist this and use it on every future connect, since
+     *  the pairing token may not authenticate again on its own. */
+    val issuedToken: String? = null
+)
 
 @Serializable
 data class ErrorPayload(val message: String)
@@ -173,6 +182,25 @@ data class NewSessionPayload(val title: String? = null)
  *  Task 4.2.2). */
 @Serializable
 data class TerminalResizePayload(val cols: Int, val rows: Int)
+
+/** Wire shape of the bridge's DEVICE_LIST payload entries (main.js LIST_DEVICES,
+ *  Task 8.2.2) — never carries a raw token, only what's needed to identify and
+ *  revoke a paired device. */
+@Serializable
+data class DeviceDto(val deviceId: String, val deviceName: String, val issuedAt: Long)
+
+/** Wire shape of one bridge AUDIT_LOG entry (main.js FETCH_AUDIT_LOG, Task 8.4.2).
+ *  `detail` is free-form per `kind` (e.g. git_command has a `command` field,
+ *  permission_decision has `permissionId`/`decision`) — decoded loosely and
+ *  rendered as text rather than typed further. */
+@Serializable
+data class AuditLogEntryDto(
+    val timestamp: String,
+    val kind: String,
+    val detail: kotlinx.serialization.json.JsonElement? = null,
+    val deviceId: String? = null,
+    val deviceName: String? = null
+)
 
 /** Matches the bridge's GIT_STATUS payload exactly (main.js pushGitStatus). */
 @Serializable
