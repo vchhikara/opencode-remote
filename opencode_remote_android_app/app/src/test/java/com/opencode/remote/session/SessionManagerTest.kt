@@ -46,6 +46,8 @@ class SessionManagerTest {
         assertEquals(null, manager.fileContent.value)
         assertEquals(null, manager.pendingDiff.value)
         assertEquals(null, manager.streamingMessage.value)
+        assertEquals(null, manager.pendingPermission.value)
+        assertEquals(null, manager.pendingQuestion.value)
         assertTrue(manager.tasks.value.isEmpty())
         assertEquals(null, manager.gitStatus.value)
     }
@@ -151,6 +153,28 @@ class SessionManagerTest {
 
         simulateIncomingMessage(createFrame("CHAT_MESSAGE", BridgeChatMessageDto(id = "m1", text = "final"), json))
         assertEquals(null, manager.streamingMessage.value)
+    }
+
+    @Test
+    fun testPermissionRequestFlowAndReply() = testScope.runTest {
+        assertEquals(null, manager.pendingPermission.value)
+        simulateIncomingMessage(createFrame("PERMISSION_REQUEST", PermissionRequestDto("per1", tool = "bash"), json))
+        assertEquals("per1", manager.pendingPermission.value?.permissionId)
+        assertEquals("bash", manager.pendingPermission.value?.tool)
+
+        manager.replyPermission("per1", "allow")
+        assertEquals(null, manager.pendingPermission.value)
+    }
+
+    @Test
+    fun testQuestionRequestFlowAndReply() = testScope.runTest {
+        assertEquals(null, manager.pendingQuestion.value)
+        simulateIncomingMessage(createFrame("QUESTION_REQUEST", QuestionRequestDto("q1", text = "Which?"), json))
+        assertEquals("q1", manager.pendingQuestion.value?.questionId)
+        assertEquals("Which?", manager.pendingQuestion.value?.text)
+
+        manager.replyQuestion("q1", "a")
+        assertEquals(null, manager.pendingQuestion.value)
     }
 
     @Test

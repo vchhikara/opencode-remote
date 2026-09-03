@@ -18,6 +18,7 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.encodeToJsonElement
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonPrimitive
 
@@ -73,6 +74,12 @@ class RemoteSessionManager(
     // the final CHAT_MESSAGE for the turn arrives (see "CHAT_MESSAGE" branch below).
     private val _streamingMessage = MutableStateFlow<StreamingMessageDto?>(null)
     val streamingMessage: StateFlow<StreamingMessageDto?> = _streamingMessage.asStateFlow()
+
+    private val _pendingPermission = MutableStateFlow<PermissionRequestDto?>(null)
+    val pendingPermission: StateFlow<PermissionRequestDto?> = _pendingPermission.asStateFlow()
+
+    private val _pendingQuestion = MutableStateFlow<QuestionRequestDto?>(null)
+    val pendingQuestion: StateFlow<QuestionRequestDto?> = _pendingQuestion.asStateFlow()
 
     private val _terminalOutput = MutableSharedFlow<String>(extraBufferCapacity = 100)
     val terminalOutput: SharedFlow<String> = _terminalOutput.asSharedFlow()
@@ -150,6 +157,8 @@ class RemoteSessionManager(
                 "STREAM_TOOL_RESULT" -> frame.decodePayload<StreamToolResultDto>(json)?.let {
                     _streamingMessage.update { (it ?: StreamingMessageDto()).copy(runningTool = null) }
                 }
+                "PERMISSION_REQUEST" -> frame.decodePayload<PermissionRequestDto>(json)?.let { _pendingPermission.value = it }
+                "QUESTION_REQUEST" -> frame.decodePayload<QuestionRequestDto>(json)?.let { _pendingQuestion.value = it }
                 "AGENT_STATE" -> frame.decodePayload<String>(json)?.let {
                     _agentState.value = it
                     if (it.equals("Idle", ignoreCase = true)) _streamingMessage.value = null
@@ -218,6 +227,18 @@ class RemoteSessionManager(
     fun rejectDiff(filePath: String) {
         sendString("REJECT_DIFF", filePath)
         if (_pendingDiff.value?.filePath == filePath) _pendingDiff.value = null
+    }
+
+    /** decision: bridge forwards this string verbatim as {decision} to
+     *  POST /permission/{id}/reply — e.g. "allow" or "deny". */
+    fun replyPermission(permissionId: String, decision: String) {
+        sendRaw("PERMISSION_REPLY", json.encodeToJsonElement(PermissionReplyPayload(permissionId, decision)))
+        if (_pendingPermission.value?.permissionId == permissionId) _pendingPermission.value = null
+    }
+
+    fun replyQuestion(questionId: String, answer: String) {
+        sendRaw("QUESTION_REPLY", json.encodeToJsonElement(QuestionReplyPayload(questionId, answer)))
+        if (_pendingQuestion.value?.questionId == questionId) _pendingQuestion.value = null
     }
 
     fun runTerminal(command: String) = sendString("TERMINAL", command)

@@ -235,6 +235,34 @@ function relaySseEvent(evt, emit) {
     }
     return;
   }
+  // [VERIFY LIVE, PROGRESS.md Phase 0] permission/question endpoints and event
+  // schema names (permission.asked / permission.v2.asked, question.asked /
+  // question.v2.asked) are confirmed from the OpenAPI doc, but a live
+  // permission-asked event was not observed in this session's probe (the bash
+  // tool ran without requesting approval in that environment) — the envelope
+  // key is read defensively (properties, falling back to data, matching the
+  // OpenAPI component's own field name) since it could not be empirically
+  // confirmed which key the live event actually uses for these two types.
+  if (evt.type === 'permission.asked' || evt.type === 'permission.v2.asked') {
+    const d = evt.properties || evt.data || {};
+    emit('PERMISSION_REQUEST', {
+      permissionId: d.id,
+      sessionId: d.sessionID,
+      tool: d.permission || (d.tool && d.tool.callID) || null,
+      input: d
+    });
+    return;
+  }
+  if (evt.type === 'question.asked' || evt.type === 'question.v2.asked') {
+    const d = evt.properties || evt.data || {};
+    emit('QUESTION_REQUEST', {
+      questionId: d.id,
+      sessionId: d.sessionID,
+      text: d.text || d.question || null,
+      options: d.options || null
+    });
+    return;
+  }
   // Other event types (session.updated, session.idle, plugin.added, etc.) are
   // not part of the streaming contract yet — intentionally not relayed.
 }
@@ -509,6 +537,34 @@ wss.on('connection', (ws, req) => {
         delete pendingDiffs[file];
         break;
       }
+      case 'PERMISSION_REPLY': {
+        // Confirmed endpoint (PROGRESS.md Phase 0): POST /permission/{requestID}/reply
+        const { permissionId, decision } = payload || {};
+        if (!permissionId) break;
+        ocFetch(`/permission/${permissionId}/reply`, {
+          method: 'POST',
+          body: JSON.stringify({ decision })
+        }).catch(e => console.log(`  ! PERMISSION_REPLY failed: ${e.message}`));
+        break;
+      }
+      case 'QUESTION_REPLY': {
+        // Confirmed endpoint (PROGRESS.md Phase 0): POST /question/{requestID}/reply
+        const { questionId, answer } = payload || {};
+        if (!questionId) break;
+        ocFetch(`/question/${questionId}/reply`, {
+          method: 'POST',
+          body: JSON.stringify({ answer })
+        }).catch(e => console.log(`  ! QUESTION_REPLY failed: ${e.message}`));
+        break;
+      }
+      case 'QUESTION_REJECT': {
+        // Confirmed endpoint (PROGRESS.md Phase 0): POST /question/{requestID}/reject
+        const { questionId } = payload || {};
+        if (!questionId) break;
+        ocFetch(`/question/${questionId}/reject`, { method: 'POST' })
+          .catch(e => console.log(`  ! QUESTION_REJECT failed: ${e.message}`));
+        break;
+      }
       case 'ACCEPT_HUNK':
       case 'REJECT_HUNK': {
         console.log(`  ! ${eventType} is not supported by this bridge (no per-hunk apply) - ignored`);
@@ -545,6 +601,7 @@ wss.on('connection', (ws, req) => {
           }
           delete tasks[tid];
           pushTaskRemoved(tid);
+          pushChatMessage('Cancelled', false, 'Cancelled', false);
         }
         break;
       }
