@@ -14,15 +14,15 @@ correct.
 
 | Phase | Task | Status | Verified-by | Notes/Blockers | Commit |
 |---|---|---|---|---|---|
-| 0 | 0.1.1 Baseline green check | Not started | | | |
-| 0 | 0.2.1 Capture live OpenAPI doc | Not started | | | |
-| 0 | 0.2.2 [VERIFY LIVE] /event SSE shape | Not started | | | |
-| 0 | 0.2.3 [VERIFY LIVE] permission/question endpoints | Not started | | | |
-| 0 | 0.2.4 [VERIFY LIVE] session list/fork/children endpoints | Not started | | | |
-| 0 | 0.2.5 [VERIFY LIVE] /pty endpoints | Not started | | | |
-| 0 | 0.2.6 [VERIFY LIVE] per-hunk/partial-apply diff capability | Not started | | | |
-| 0 | 0.2.7 [VERIFY LIVE] /project API | Not started | | | |
-| 0 | 0.2.8 Kill probe server | Not started | | | |
+| 0 | 0.1.1 Baseline green check | Done | `bridge npm test`→14 pass/0 fail; `gradlew testDebugUnitTest`→BUILD SUCCESSFUL; `gradlew assembleDebug`→BUILD SUCCESSFUL | | 1f7a1b8 |
+| 0 | 0.2.1 Capture live OpenAPI doc | Done | `opencode serve --port 4097`, `curl .../doc`→200, `jq .`→valid JSON, 478742 bytes | v1.18.26 CLI | 1f7a1b8 |
+| 0 | 0.2.2 [VERIFY LIVE] /event SSE shape | Done | Live probe: created session, sent prompt, captured `/event` SSE for 20s | See Live-API findings below | 1f7a1b8 |
+| 0 | 0.2.3 [VERIFY LIVE] permission/question endpoints | Done | `jq '.paths\|keys[]\|select(test("permission\|question"))'` on captured OpenAPI doc | See Live-API findings below | 1f7a1b8 |
+| 0 | 0.2.4 [VERIFY LIVE] session list/fork/children endpoints | Done | Same jq probe on `/doc` | See Live-API findings below | 1f7a1b8 |
+| 0 | 0.2.5 [VERIFY LIVE] /pty endpoints | Done | Same jq probe on `/doc`; connect endpoint description read | See Live-API findings below | 1f7a1b8 |
+| 0 | 0.2.6 [VERIFY LIVE] per-hunk/partial-apply diff capability | Done | Same jq probe on `/doc` | No per-hunk endpoint exists — see findings | 1f7a1b8 |
+| 0 | 0.2.7 [VERIFY LIVE] /project API | Done | Same jq probe on `/doc` | See Live-API findings below | 1f7a1b8 |
+| 0 | 0.2.8 Kill probe server | Done | `pkill -f "opencode serve --port 4097"`; `curl .../config`→HTTP 000 (refused) | | 1f7a1b8 |
 | 1 | 1.1.1 Bridge SSE client (log only) | Not started | | | |
 | 1 | 1.1.2 Bridge relay STREAM_* frames | Not started | | | |
 | 1 | 1.1.3 Confirm final CHAT_MESSAGE/FILE_DIFF unchanged | Not started | | | |
@@ -84,12 +84,60 @@ correct.
 
 ## Live-API findings (filled in during Phase 0, referenced by later phases)
 
-- `/event`, `/session/{id}/event` shape: _pending_
-- `/session/{id}/permission/{id}`, `/permission/{id}/reply`, `/question/{id}/reply`,
-  `/question/{id}/reject`: _pending_
-- `GET /session`, `POST /session/{id}/fork`, `POST /session` with `parentID`,
-  `/session/{id}/children`: _pending_
-- `/pty`, `/pty/{id}`, `/pty/{id}/connect`, `/pty/{id}/connect-token`, `/pty/shells`:
-  _pending_
-- Per-hunk / partial-apply diff capability: _pending_
-- `/project` API: _pending_
+Captured against `opencode` CLI v1.18.26, `opencode serve --port 4097`. Full OpenAPI
+doc saved at `/tmp/opencode-openapi.json` during the probe (not committed — regenerate
+if needed via Task 0.2.1's command). Note: the OpenAPI doc has two path families —
+`/api/session/{sessionID}/...` and a shorter, unprefixed `/session/{sessionID}/...`.
+`bridge/main.js`'s existing `ocFetch` calls use the unprefixed family — findings below
+use that family to match current bridge code, noting the `/api/...` duplicate exists
+if ever needed.
+
+- **`/event`, `/session/{id}/event` shape**: `GET /event` returns
+  `Content-Type: text/event-stream`, confirmed live — fired a real prompt and captured
+  `data: {"id":..., "type":"...", "properties":{...}}` lines. Real event types
+  observed in one prompt/response cycle: `server.connected`, `server.heartbeat`,
+  `session.updated`, `session.status`, `session.idle`, `session.diff`,
+  `message.updated`, `message.part.updated`, `message.part.delta` (the actual
+  streaming-text delta event — use this one for `STREAM_TEXT_DELTA`), `text`,
+  `reasoning`, `reasoning.text`, `step-start`, `step-finish`, `catalog.updated`,
+  `plugin.added`, `integration.updated`, `reference.updated`, `tui.toast.show`, `busy`,
+  `idle`. No tool-call event appeared in this cycle (prompt didn't invoke a tool) —
+  Phase 1 should re-probe with a tool-invoking prompt (e.g. "list files") before
+  implementing `STREAM_TOOL_CALL`/`STREAM_TOOL_RESULT` mapping, or inspect
+  `message.part.updated` parts for a `type: "tool"` part (the OpenAPI schema has
+  `EventPermissionAsked`/`EventPermissionV2Asked` etc. suggesting a versioned
+  event/schema split — check whether `part.type` differentiates `text` vs `tool` parts
+  in `.components.schemas.Part` before coding Phase 1).
+- **Permission/question endpoints**: unprefixed family confirmed in `/doc`:
+  `POST /permission/{requestID}/reply`, `POST /question/{requestID}/reply`,
+  `POST /question/{requestID}/reject`. (The plan's other guessed path,
+  `/session/{id}/permission/{permissionID}`, does NOT exist in the unprefixed family —
+  only `/session/{sessionID}/permissions/{permissionID}` [note plural "permissions"]
+  does; the reply action is the top-level `/permission/{requestID}/reply` instead, not
+  session-scoped.) Event schemas exist for `EventPermissionAsked`/`EventPermissionV2Asked`
+  and `EventQuestionAsked`/`EventQuestionV2Asked` — there are BOTH v1 and v2 event/schema
+  families; Phase 2 must trigger a real permission prompt (e.g. ask the agent to run a
+  shell command) and inspect the actual live event `type` string to know whether v1 or
+  v2 is what this CLI version actually emits, rather than assuming from schema name
+  alone.
+- **`GET /session`, `POST /session/{id}/fork`, `POST /session` with `parentID`,
+  `/session/{id}/children`**: ALL confirmed present — `GET /session` (list, methods
+  `get`+`post` on `/session`), `POST /session/{sessionID}/fork`,
+  `/session/{sessionID}/children`. `POST /session` accepting `parentID` not directly
+  confirmed from path list alone — check its request body schema in Phase 3
+  (`jq '.paths["/session"].post.requestBody'` against a fresh `/doc` capture).
+- **`/pty`, `/pty/{id}`, `/pty/{id}/connect`, `/pty/{id}/connect-token`,
+  `/pty/shells`**: confirmed present at `/pty` (get+post), `/pty/{ptyID}`,
+  `/pty/{ptyID}/connect` (get — description: "Establish a WebSocket connection to
+  interact with a pseudo-terminal (PTY) session in real-time" — **transport is
+  WebSocket**, not SSE/polling), `/pty/{ptyID}/connect-token`, `/pty/shells`.
+- **Per-hunk / partial-apply diff capability**: NOT found. Only whole-file diff
+  endpoints exist: `GET /session/{id}/diff`, `GET /vcs/diff`, `GET /vcs/diff/raw`. No
+  `patch`/`hunk` path anywhere in the OpenAPI doc. Phase 5 Task 5.2 must be scoped down
+  to `Won't do (unsupported upstream)` per the plan's own conditional — confirmed via
+  this probe, not silently dropped.
+- **`/project` API**: confirmed present — `GET /project` (list), `GET /project/current`,
+  `POST /project/git/init`, `GET /project/{projectID}`,
+  `GET /project/{projectID}/directories`, plus experimental copy endpoints. This
+  supports Phase 6's "scope sessions by workspace within one server via `/project`"
+  option as a real, implementable choice (not purely aspirational).
