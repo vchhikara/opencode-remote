@@ -23,12 +23,12 @@ correct.
 | 0 | 0.2.6 [VERIFY LIVE] per-hunk/partial-apply diff capability | Done | Same jq probe on `/doc` | No per-hunk endpoint exists — see findings | 1f7a1b8 |
 | 0 | 0.2.7 [VERIFY LIVE] /project API | Done | Same jq probe on `/doc` | See Live-API findings below | 1f7a1b8 |
 | 0 | 0.2.8 Kill probe server | Done | `pkill -f "opencode serve --port 4097"`; `curl .../config`→HTTP 000 (refused) | | 1f7a1b8 |
-| 1 | 1.1.1 Bridge SSE client (log only) | Not started | | | |
-| 1 | 1.1.2 Bridge relay STREAM_* frames | Not started | | | |
-| 1 | 1.1.3 Confirm final CHAT_MESSAGE/FILE_DIFF unchanged | Not started | | | |
-| 1 | 1.2.1 Android streaming state in RemoteSessionManager | Not started | | | |
-| 1 | 1.2.2 Android ChatScreen streaming bubble + tool status | Not started | | | |
-| 1 | Phase 1 merge gate (baseline rerun) | Not started | | | |
+| 1 | 1.1.1 Bridge SSE client (log only) | Done | Superseded by 1.1.2's end-to-end test (built directly with broadcast, not log-only, per efficiency) | Combined 1.1.1+1.1.2 into one implementation | 7527987 |
+| 1 | 1.1.2 Bridge relay STREAM_* frames | Done | `cd bridge && npm test` → 15 pass/0 fail, incl. new `stream.test.js` asserting all 3 STREAM_* frame types observed over real WS | Used fake-opencode.js fixture (moved to test-fixtures/ — node --test auto-discovers test/**/*.js) | 7527987 |
+| 1 | 1.1.3 Confirm final CHAT_MESSAGE/FILE_DIFF unchanged | Done | `grep -n "pushChatMessage(text.trim()" bridge/main.js` → match at line 321 | | 7527987 |
+| 1 | 1.2.1 Android streaming state in RemoteSessionManager | Done | `gradlew :app:testDebugUnitTest --tests "*SessionManagerTest*"` → BUILD SUCCESSFUL (3 new tests) | Added StreamTextDeltaDto/StreamToolCallDto/StreamToolResultDto/StreamingMessageDto | (pending commit) |
+| 1 | 1.2.2 Android ChatScreen streaming bubble + tool status | Done (automated part) | `gradlew :app:assembleDebug -Dorg.gradle.java.home=...` → BUILD SUCCESSFUL | Manual on-device confirmation NOT performed this session (no device connected) — automated exit criterion is the merge gate per plan; manual check remains outstanding | (pending commit) |
+| 1 | Phase 1 merge gate (baseline rerun) | Done | bridge npm test → 15/15; `testDebugUnitTest` → BUILD SUCCESSFUL; `assembleDebug` → BUILD SUCCESSFUL | | (pending commit) |
 | 2 | 2.1.1 Bridge relay PERMISSION_REQUEST/QUESTION_REQUEST | Not started | | | |
 | 2 | 2.1.2 Bridge handle PERMISSION_REPLY/QUESTION_REPLY | Not started | | | |
 | 2 | 2.1.3 Check/gate existing auto-approve | Not started | | | |

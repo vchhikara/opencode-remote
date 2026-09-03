@@ -68,6 +68,12 @@ class RemoteSessionManager(
     private val _pendingDiff = MutableStateFlow<FileDiffDto?>(null)
     val pendingDiff: StateFlow<FileDiffDto?> = _pendingDiff.asStateFlow()
 
+    // In-progress assistant turn, built up from STREAM_TEXT_DELTA/STREAM_TOOL_CALL/
+    // STREAM_TOOL_RESULT frames. Null when no generation is in flight. Cleared when
+    // the final CHAT_MESSAGE for the turn arrives (see "CHAT_MESSAGE" branch below).
+    private val _streamingMessage = MutableStateFlow<StreamingMessageDto?>(null)
+    val streamingMessage: StateFlow<StreamingMessageDto?> = _streamingMessage.asStateFlow()
+
     private val _terminalOutput = MutableSharedFlow<String>(extraBufferCapacity = 100)
     val terminalOutput: SharedFlow<String> = _terminalOutput.asSharedFlow()
 
@@ -133,8 +139,21 @@ class RemoteSessionManager(
                 "WORKSPACE_OPENED" -> frame.decodePayload<OpenWorkspacePayload>(json)?.let { _activeWorkspace.value = it.path }
                 "CHAT_MESSAGE" -> frame.decodePayload<BridgeChatMessageDto>(json)?.let { msg ->
                     _chatMessages.update { it + msg.toUi() }
+                    _streamingMessage.value = null // final message landed; turn is over
                 }
-                "AGENT_STATE" -> frame.decodePayload<String>(json)?.let { _agentState.value = it }
+                "STREAM_TEXT_DELTA" -> frame.decodePayload<StreamTextDeltaDto>(json)?.let { delta ->
+                    _streamingMessage.update { (it ?: StreamingMessageDto()).copy(text = it?.text.orEmpty() + delta.text) }
+                }
+                "STREAM_TOOL_CALL" -> frame.decodePayload<StreamToolCallDto>(json)?.let { call ->
+                    _streamingMessage.update { (it ?: StreamingMessageDto()).copy(runningTool = call.tool) }
+                }
+                "STREAM_TOOL_RESULT" -> frame.decodePayload<StreamToolResultDto>(json)?.let {
+                    _streamingMessage.update { (it ?: StreamingMessageDto()).copy(runningTool = null) }
+                }
+                "AGENT_STATE" -> frame.decodePayload<String>(json)?.let {
+                    _agentState.value = it
+                    if (it.equals("Idle", ignoreCase = true)) _streamingMessage.value = null
+                }
                 "FILE_TREE" -> frame.decodePayload<List<FileNodeDto>>(json)?.let { _fileTree.value = it }
                 "FILE_CONTENT" -> frame.decodePayload<String>(json)?.let { content ->
                     _fileContent.value = FileContentDto(path = pendingFileRequestPath ?: "", content = content)

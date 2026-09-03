@@ -102,6 +102,31 @@ enum class TaskStatus {
 @Serializable
 data class TaskDto(val id: String, val name: String, val port: Int? = null, val status: String)
 
+/** Wire shape of the bridge's STREAM_TEXT_DELTA payload (main.js relaySseEvent). */
+@Serializable
+data class StreamTextDeltaDto(val sessionId: String? = null, val text: String)
+
+/** Wire shape of the bridge's STREAM_TOOL_CALL payload (main.js relaySseEvent). Input
+ *  is opencode's free-form tool-input object — not typed further, just shown. */
+@Serializable
+data class StreamToolCallDto(val sessionId: String? = null, val tool: String, val input: kotlinx.serialization.json.JsonElement? = null)
+
+/** Wire shape of the bridge's STREAM_TOOL_RESULT payload. `output` is a string on
+ *  success but may be an error object per opencode's ToolStateError — decoded loosely
+ *  as JsonElement and rendered as text either way. */
+@Serializable
+data class StreamToolResultDto(val sessionId: String? = null, val tool: String, val output: kotlinx.serialization.json.JsonElement? = null)
+
+/** UI-facing view of an in-progress assistant turn: accumulated streamed text plus
+ *  which tool (if any) is currently running. Cleared once the final CHAT_MESSAGE for
+ *  this turn lands (see RemoteSessionManager). Not [Serializable] — built up locally
+ *  from StreamTextDeltaDto/StreamToolCallDto/StreamToolResultDto frames, never decoded
+ *  directly off the wire. */
+data class StreamingMessageDto(
+    val text: String = "",
+    val runningTool: String? = null
+)
+
 /** Matches the bridge's GIT_STATUS payload exactly (main.js pushGitStatus). */
 @Serializable
 data class GitStatusDto(
