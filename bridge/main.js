@@ -1,4 +1,4 @@
-const { WebSocketServer } = require('ws');
+const { WebSocketServer, WebSocket } = require('ws');
 const { Bonjour } = require('bonjour-service');
 const { exec, spawn } = require('child_process');
 const crypto = require('crypto');
@@ -12,13 +12,132 @@ const OPCODE = process.env.OPCODE || 'opencode';
 const AUTH_TOKEN = process.env.BRIDGE_TOKEN || crypto.randomBytes(32).toString('hex');
 console.log(`  Auth token: ${AUTH_TOKEN}`);
 
+// --- Per-device tokens (Task 8.1) ---
+// AUTH_TOKEN above is now only a one-time *pairing* secret (what the QR code
+// carries), not something every future connection is checked against
+// forever. The first CONNECT that presents it gets issued a distinct
+// per-device token, persisted here; every later CONNECT authenticates with
+// that device's own token instead. This is what makes per-device revocation
+// (Task 8.2) meaningful — revoking one device's token doesn't affect any
+// other paired device or require re-pairing everyone.
+const DEVICE_STORE_PATH = process.env.DEVICE_STORE_PATH || path.join(os.homedir(), '.opencode-remote-devices.json');
+let deviceTokens = loadDeviceTokens();
+
+function loadDeviceTokens() {
+  try {
+    return JSON.parse(fs.readFileSync(DEVICE_STORE_PATH, 'utf-8'));
+  } catch {
+    return {};
+  }
+}
+
+function saveDeviceTokens() {
+  try {
+    fs.writeFileSync(DEVICE_STORE_PATH, JSON.stringify(deviceTokens, null, 2));
+  } catch (e) {
+    console.log(`  ! failed to persist device tokens: ${e.message}`);
+  }
+}
+
+function issueDeviceToken(deviceName) {
+  const token = crypto.randomBytes(32).toString('hex');
+  const deviceId = crypto.randomUUID();
+  deviceTokens[token] = { deviceId, deviceName, issuedAt: Date.now() };
+  saveDeviceTokens();
+  return { token, deviceId };
+}
+
+function timingSafeTokenEquals(a, b) {
+  const bufA = Buffer.from(String(a || ''));
+  const bufB = Buffer.from(String(b || ''));
+  return bufA.length === bufB.length && bufA.length > 0 && crypto.timingSafeEqual(bufA, bufB);
+}
+
 const clients = new Set();
 let sessions = {};
 let activeWorkspace = process.cwd();
 let pendingDiffs = {};
 let tasks = {};
-let opencodeProc = null;
 const WORKSPACE_ROOT = process.env.WORKSPACE_ROOT || process.cwd();
+
+// --- Audit log (Task 8.4.1) ---
+// Append-only JSON-lines log of every approved command/edit: permission
+// decisions (Phase 2), git commands executed, terminal commands executed.
+// Path is env-configurable (test isolation), following the DEVICE_STORE_PATH
+// pattern; defaults to a file under WORKSPACE_ROOT.
+const AUDIT_LOG_PATH = process.env.AUDIT_LOG_PATH || path.join(WORKSPACE_ROOT, '.opencode-remote-audit.log');
+
+function appendAuditLog(kind, detail, ws) {
+  const entry = {
+    timestamp: new Date().toISOString(),
+    kind,
+    detail,
+    deviceId: (ws && ws.deviceId) || null,
+    deviceName: (ws && ws.deviceName) || null
+  };
+  try {
+    fs.appendFileSync(AUDIT_LOG_PATH, JSON.stringify(entry) + '\n');
+  } catch (e) {
+    console.log(`  ! failed to append audit log: ${e.message}`);
+  }
+}
+
+// --- Multi-workspace tracking (Task 6.1) ---
+// Decision (6.1.2), grounded in the Phase 0 0.2.7 finding that `/project`
+// exists but opencode serve binds to one project directory for its whole
+// process lifetime (confirmed by this bridge's own pre-existing behavior:
+// startOpenCodeServer() must be restarted, not reconfigured, to move to a
+// new directory — see OPEN_WORKSPACE below): this bridge uses "one
+// opencode serve + one persisted session per workspace" rather than trying
+// to scope multiple concurrent workspaces through a single server's
+// `/project` API. `activeWorkspace` stays the single source of truth for
+// path resolution (resolveInsideWorkspace, pushFileTree, etc. untouched);
+// `workspaces` is purely additional bookkeeping of every directory the
+// user has opened or added, for the workspace list UI.
+function makeWorkspaceEntry(p) {
+  return { id: p, name: path.basename(p), path: p };
+}
+let workspaces = [makeWorkspaceEntry(activeWorkspace)];
+
+// --- OpenCode server (persistent, one session reused across prompts) ---
+// Previously every PROMPT spawned a fresh `opencode run` subprocess with no
+// session id, so nothing survived between prompts and a hung/unreachable model
+// provider meant the process just sat there forever with no error surfaced.
+// Now a single `opencode serve` process stays up for the bridge's lifetime and
+// prompts are sent into one reused session via its HTTP API.
+const OC_SERVE_PORT = parseInt(process.env.OC_SERVE_PORT || '4096', 10);
+const OC_PROMPT_TIMEOUT_MS = parseInt(process.env.OC_PROMPT_TIMEOUT_MS || '120000', 10);
+const ocBaseUrl = `http://127.0.0.1:${OC_SERVE_PORT}`;
+let ocServeProc = null;
+let ocReadyPromise = null;
+let ocSessionId = null;
+
+// Session-id persistence across bridge restarts (Task 3.2). Stored as a small
+// JSON file inside the workspace, keyed by nothing else — one bridge process
+// serves one workspace at a time, so one file is enough. A bridge crash/
+// restart then resumes the same opencode session instead of silently
+// starting a fresh one.
+function sessionStateFilePath() {
+  return path.join(activeWorkspace, '.opencode-remote-session.json');
+}
+
+function persistSessionId() {
+  try {
+    fs.writeFileSync(sessionStateFilePath(), JSON.stringify({ sessionId: ocSessionId }));
+  } catch (e) {
+    console.log(`  ! failed to persist session id: ${e.message}`);
+  }
+}
+
+function loadPersistedSessionId() {
+  try {
+    const raw = fs.readFileSync(sessionStateFilePath(), 'utf-8');
+    const data = JSON.parse(raw);
+    return data.sessionId || null;
+  } catch {
+    return null;
+  }
+}
 
 function resolveInsideWorkspace(p) {
   const abs = path.resolve(activeWorkspace, p);
@@ -109,6 +228,19 @@ function pushChatMessage(msg, isUser, actionDesc, details) {
   broadcast('CHAT_MESSAGE', { id: Date.now().toString(), text: msg, isUser, actionDescription: actionDesc || '', hasDetails: !!details });
 }
 
+// --- Push notification hook (Task 7.1.1) ---
+// No FCM project/credentials exist in this environment to send a real push,
+// so this hook's body is a placeholder — it broadcasts a NOTIFY frame over
+// the same WS connected clients already use (covers the foregrounded-client
+// case today) and is the one seam a real FCM send would plug into later
+// (swap the body for an actual FCM API call; every call site below stays
+// unchanged). Manual on-device background-push delivery is therefore NOT
+// claimed Done here — see PROGRESS.md.
+function notifyExternal(kind, detail) {
+  console.log(`  [notify] ${kind}: ${JSON.stringify(detail).slice(0, 200)}`);
+  broadcast('NOTIFY', { kind, detail });
+}
+
 function pushFileDiff(fileName, diffText) {
   pendingDiffs[fileName] = diffText;
   broadcast('FILE_DIFF', { fileName, diffText });
@@ -116,6 +248,42 @@ function pushFileDiff(fileName, diffText) {
 
 function pushTerminalLine(line) {
   broadcast('TERMINAL_OUTPUT', line);
+}
+
+// --- PTY-backed terminal (Task 4.1) ---
+// [VERIFY LIVE] confirmed via a live probe against opencode serve v1.18.26:
+// POST /pty {command, args} creates a PTY and returns {id, ...}; the actual
+// I/O transport is a WebSocket at GET /pty/{id}/connect (not SSE/polling) —
+// plain-text frames are terminal output, and frames prefixed with a NUL byte
+// carry out-of-band JSON control data (e.g. {"cursor":N}) rather than output,
+// so those are dropped rather than displayed. Resize is `PUT /pty/{id}` with
+// body `{size:{rows,cols}}` (confirmed in the OpenAPI schema).
+// activePtyId tracks the most recently started terminal command's PTY so a
+// TERMINAL_RESIZE with no explicit ptyId (the common case — this app only
+// ever has one terminal open at a time) still resizes the right one.
+let activePtyId = null;
+
+async function runTerminalCommand(command) {
+  const shellBin = process.platform === 'win32' ? 'cmd' : '/bin/sh';
+  const shellFlag = process.platform === 'win32' ? '/c' : '-c';
+  if (!ocServeProc) startOpenCodeServer();
+  await ocReadyPromise;
+  const res = await ocFetch('/pty', {
+    method: 'POST',
+    body: JSON.stringify({ command: shellBin, args: [shellFlag, command] })
+  });
+  if (!res.ok) throw new Error(`PTY create failed: HTTP ${res.status}`);
+  const data = await res.json();
+  const ptyId = data.id;
+  activePtyId = ptyId;
+  const ptyWs = new WebSocket(`ws://127.0.0.1:${OC_SERVE_PORT}/pty/${ptyId}/connect`);
+  ptyWs.on('message', (chunk) => {
+    const text = chunk.toString();
+    if (text.startsWith(' ')) return; // out-of-band control frame, not output
+    pushTerminalLine(text);
+  });
+  ptyWs.on('error', (err) => pushTerminalLine(`Error: ${err.message}`));
+  ptyWs.on('close', () => { if (activePtyId === ptyId) activePtyId = null; });
 }
 
 function pushTaskUpdated(task) {
@@ -126,66 +294,262 @@ function pushTaskRemoved(id) {
   broadcast('TASK_REMOVED', id);
 }
 
-// --- OpenCode subprocess ---
-function startOpenCode() {
-  if (opencodeProc) { opencodeProc.kill(); opencodeProc = null; }
-  pushAgentState('Idle');
-}
+// --- OpenCode server lifecycle ---
 
-function runPrompt(prompt) {
-  pushAgentState('Thinking...');
-  const proc = spawn(OPCODE, ['run', '--format', 'json', '--auto', '--dir', activeWorkspace, prompt], {
+// Starts (or restarts) the persistent `opencode serve` process bound to
+// activeWorkspace's directory. Called at bridge startup and whenever the
+// workspace changes (the server's project directory is fixed to its own cwd
+// at spawn time, so a workspace switch means a fresh process — and thus a
+// fresh session, same as switching directories used to do before).
+function startOpenCodeServer() {
+  if (ocServeProc) { ocServeProc.kill(); ocServeProc = null; }
+  // Resume the last session used in this workspace (Task 3.2) instead of
+  // always starting null — ensureSession() will fall back to creating a new
+  // one if this id no longer exists server-side.
+  ocSessionId = loadPersistedSessionId();
+
+  const proc = spawn(OPCODE, ['serve', '--port', String(OC_SERVE_PORT), '--hostname', '127.0.0.1'], {
     cwd: activeWorkspace,
-    env: { ...process.env, OPENCODE_CLI_DISABLE_PROMPT: '1' }
+    env: process.env
   });
-  let buffer = '';
-  let diffAccum = '';
-  let lastText = '';
-
-  proc.stdout.on('data', chunk => {
-    buffer += chunk.toString();
-    const lines = buffer.split('\n');
-    buffer = lines.pop() || '';
-    for (const line of lines) {
-      if (!line.trim()) continue;
-      try {
-        const evt = JSON.parse(line);
-        if (evt.type === 'text' && evt.text) {
-          lastText += evt.text;
-        }
-        if (evt.type === 'tool' && evt.tool === 'file.edit') {
-          diffAccum += evt.diff || evt.content || '';
-        }
-        if (evt.type === 'agent' && evt.state) {
-          pushAgentState(evt.state);
-        }
-      } catch {}
+  proc.stderr.on('data', d => console.log(`  [opencode serve] ${d.toString().trim()}`));
+  proc.on('error', e => console.log(`  ! failed to start opencode serve: ${e.message}`));
+  proc.on('exit', code => {
+    if (proc === ocServeProc) {
+      console.log(`  ! opencode serve exited unexpectedly (code ${code})`);
+      ocServeProc = null;
+      ocReadyPromise = null;
     }
   });
+  ocServeProc = proc;
 
-  proc.stderr.on('data', chunk => {
-    pushTerminalLine(chunk.toString());
+  ocReadyPromise = (async () => {
+    for (let i = 0; i < 60; i++) {
+      try {
+        const res = await fetch(`${ocBaseUrl}/config`, { signal: AbortSignal.timeout(1000) });
+        if (res.ok) return true;
+      } catch {}
+      await new Promise(r => setTimeout(r, 500));
+    }
+    console.log('  ! opencode serve did not become ready within 30s');
+    return false;
+  })();
+
+  return ocReadyPromise;
+}
+
+async function ocFetch(pathname, opts = {}) {
+  const timeoutMs = opts.timeoutMs || 15000;
+  const res = await fetch(`${ocBaseUrl}${pathname}`, {
+    method: opts.method || 'GET',
+    headers: { 'Content-Type': 'application/json' },
+    body: opts.body,
+    signal: AbortSignal.timeout(timeoutMs)
   });
+  return res;
+}
 
-  proc.on('close', code => {
-    if (lastText) pushChatMessage(lastText.trim(), false, 'Generated code', true);
-    if (diffAccum) pushFileDiff('pending_changes.diff', diffAccum);
-    pushAgentState('Idle');
-  });
+// --- Live streaming: relay opencode serve's /event SSE feed as WS frames ---
+// [VERIFY LIVE, confirmed in PROGRESS.md Phase 0] /event streams
+// text/event-stream with `message.part.delta` carrying incremental text and
+// `message.part.updated` carrying tool-part state transitions (part.type ===
+// 'tool', part.state.status in pending/running/completed/error).
+let ocEventStreamStarted = false;
 
-  proc.on('error', err => {
-    pushChatMessage(`Error: ${err.message}`, false, 'Error', false);
-    pushAgentState('Idle');
-  });
+// Parses one SSE event ("data: {...}" line, possibly among other lines in the
+// same event block) and relays it as a WS frame via `emit`. Split out from the
+// stream-reading loop so tests can feed it canned SSE text directly instead of
+// standing up a real HTTP server.
+function relaySseEventBlock(rawBlock, emit) {
+  for (const line of rawBlock.split('\n')) {
+    if (!line.startsWith('data:')) continue;
+    const jsonStr = line.slice(5).trim();
+    if (!jsonStr) continue;
+    let evt;
+    try { evt = JSON.parse(jsonStr); } catch { continue; }
+    console.log(`  [sse] ${evt.type}`);
+    relaySseEvent(evt, emit);
+  }
+}
 
-  opencodeProc = proc;
-  const task = { id: String(proc.pid), name: `Prompt: ${prompt.substring(0, 40)}`, pid: proc.pid, status: 'Running' };
-  tasks[proc.pid] = task;
+function relaySseEvent(evt, emit) {
+  const props = evt.properties || {};
+  if (evt.type === 'message.part.delta') {
+    const part = props.part || {};
+    if (part.type === 'text' && typeof part.text === 'string') {
+      emit('STREAM_TEXT_DELTA', { sessionId: props.sessionID || part.sessionID, text: part.text });
+    }
+    return;
+  }
+  if (evt.type === 'message.part.updated') {
+    const part = props.part || {};
+    if (part.type === 'tool') {
+      const state = part.state || {};
+      const sessionId = props.sessionID || part.sessionID;
+      if (state.status === 'running' || state.status === 'pending') {
+        emit('STREAM_TOOL_CALL', { sessionId, tool: part.tool, input: state.input });
+      } else if (state.status === 'completed' || state.status === 'error') {
+        emit('STREAM_TOOL_RESULT', { sessionId, tool: part.tool, output: state.output || state.error });
+        // [VERIFY LIVE, Task 5.3.1] a completed edit/write tool call carries
+        // its patch at state.metadata.filediff = {file, patch, additions,
+        // deletions} — confirmed via a live probe prompting a real file edit
+        // (PROGRESS.md Phase 5). Push it as a live FILE_DIFF the moment the
+        // tool completes, instead of only after the whole prompt finishes.
+        const filediff = state.metadata && state.metadata.filediff;
+        if (state.status === 'completed' && filediff && filediff.file && typeof filediff.patch === 'string') {
+          pushFileDiff(filediff.file, filediff.patch);
+        }
+      }
+    }
+    return;
+  }
+  // [VERIFY LIVE, PROGRESS.md Phase 0] permission/question endpoints and event
+  // schema names (permission.asked / permission.v2.asked, question.asked /
+  // question.v2.asked) are confirmed from the OpenAPI doc, but a live
+  // permission-asked event was not observed in this session's probe (the bash
+  // tool ran without requesting approval in that environment) — the envelope
+  // key is read defensively (properties, falling back to data, matching the
+  // OpenAPI component's own field name) since it could not be empirically
+  // confirmed which key the live event actually uses for these two types.
+  if (evt.type === 'permission.asked' || evt.type === 'permission.v2.asked') {
+    const d = evt.properties || evt.data || {};
+    emit('PERMISSION_REQUEST', {
+      permissionId: d.id,
+      sessionId: d.sessionID,
+      tool: d.permission || (d.tool && d.tool.callID) || null,
+      input: d
+    });
+    notifyExternal('permission_request', { permissionId: d.id, sessionId: d.sessionID });
+    return;
+  }
+  if (evt.type === 'question.asked' || evt.type === 'question.v2.asked') {
+    const d = evt.properties || evt.data || {};
+    emit('QUESTION_REQUEST', {
+      questionId: d.id,
+      sessionId: d.sessionID,
+      text: d.text || d.question || null,
+      options: d.options || null
+    });
+    return;
+  }
+  // Other event types (session.updated, session.idle, plugin.added, etc.) are
+  // not part of the streaming contract yet — intentionally not relayed.
+}
+
+// Opens the real /event SSE stream against the running opencode serve process
+// and relays parsed events via `emit`, reconnecting with a fixed delay if the
+// stream drops while opencode serve is still up. Not unit-tested directly
+// (would require a real HTTP server); relaySseEventBlock/relaySseEvent carry
+// the tested logic. Exit criterion for this function is the manual/live check
+// described in IMPLEMENTATION_PLAN.md Task 1.1.1.
+async function startEventStream(emit) {
+  if (ocEventStreamStarted) return;
+  ocEventStreamStarted = true;
+  for (;;) {
+    try {
+      const res = await fetch(`${ocBaseUrl}/event`, { headers: { Accept: 'text/event-stream' } });
+      if (!res.ok || !res.body) throw new Error(`event stream returned ${res.status}`);
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buf = '';
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
+        let idx;
+        while ((idx = buf.indexOf('\n\n')) !== -1) {
+          relaySseEventBlock(buf.slice(0, idx), emit);
+          buf = buf.slice(idx + 2);
+        }
+      }
+    } catch (e) {
+      console.log(`  ! event stream error: ${e.message}`);
+    }
+    if (!ocServeProc) { ocEventStreamStarted = false; return; }
+    await new Promise(r => setTimeout(r, 2000));
+  }
+}
+
+async function ensureSession() {
+  // Trusts a persisted/switched-to session id at face value — opencode's own
+  // session storage lives independently of any one `opencode serve` process,
+  // so an id from a prior bridge run is expected to still resolve. If it
+  // doesn't, the next prompt call surfaces that as a normal error (same path
+  // as any other opencode-server error), not a silent fallback.
+  if (ocSessionId) return ocSessionId;
+  const res = await ocFetch('/session', { method: 'POST', body: JSON.stringify({ title: 'OpenCode Remote' }) });
+  if (!res.ok) throw new Error(`Could not create opencode session (${res.status})`);
+  const session = await res.json();
+  ocSessionId = session.id;
+  persistSessionId();
+  return ocSessionId;
+}
+
+async function runPrompt(prompt) {
+  pushAgentState('Thinking...');
+  const taskId = `prompt-${Date.now()}`;
+  const task = { id: taskId, name: `Prompt: ${prompt.substring(0, 40)}`, status: 'Running' };
+  tasks[taskId] = task;
   pushTaskUpdated(task);
-  proc.on('close', () => {
-    delete tasks[proc.pid];
-    pushTaskRemoved(String(proc.pid));
-  });
+
+  try {
+    if (!ocServeProc) startOpenCodeServer();
+    await ocReadyPromise;
+    startEventStream(broadcast); // idempotent; no-op if already streaming
+    const sessionId = await ensureSession();
+    task.sessionId = sessionId;
+
+    const res = await ocFetch(`/session/${sessionId}/message`, {
+      method: 'POST',
+      timeoutMs: OC_PROMPT_TIMEOUT_MS,
+      body: JSON.stringify({ parts: [{ type: 'text', text: prompt }] })
+    });
+    if (!res.ok) {
+      const body = await res.text().catch(() => '');
+      throw new Error(`opencode server returned ${res.status}: ${body.slice(0, 300)}`);
+    }
+    const result = await res.json();
+    // A 200 here does not mean the prompt succeeded — a provider/auth failure
+    // (bad/missing API key, unreachable endpoint) comes back as HTTP 200 with
+    // result.info.error set and result.parts empty, not a non-2xx status.
+    const serverError = result.info && result.info.error;
+    if (serverError) {
+      const detail = (serverError.data && serverError.data.message) || serverError.name || 'unknown error';
+      pushChatMessage(`Error (${serverError.name || 'provider error'}): ${detail}`, false, 'Error', false);
+      notifyExternal('error', { taskId, message: detail });
+    } else {
+      const text = (result.parts || [])
+        .filter(p => p.type === 'text' && p.text)
+        .map(p => p.text)
+        .join('');
+      if (text) pushChatMessage(text.trim(), false, 'Generated response', true);
+    }
+
+    // Real per-file diffs from the session, replacing the old hardcoded
+    // single-file 'pending_changes.diff' name with the actual changed paths.
+    try {
+      const diffRes = await ocFetch(`/session/${sessionId}/diff`);
+      if (diffRes.ok) {
+        const files = await diffRes.json();
+        for (const f of files) {
+          if (f.file && f.patch) pushFileDiff(f.file, f.patch);
+        }
+      }
+    } catch (e) {
+      console.log(`  ! failed to fetch diff: ${e.message}`);
+    }
+  } catch (e) {
+    const message = e.name === 'TimeoutError' || e.name === 'AbortError'
+      ? `opencode did not respond within ${Math.round(OC_PROMPT_TIMEOUT_MS / 1000)}s — check the model/provider config on the bridge machine`
+      : `Error: ${e.message}`;
+    pushChatMessage(message, false, 'Error', false);
+    notifyExternal('error', { taskId, message });
+  } finally {
+    delete tasks[taskId];
+    pushTaskRemoved(taskId);
+    notifyExternal('task_completed', { taskId });
+    pushAgentState('Idle');
+  }
 }
 
 // --- File tree ops ---
@@ -242,6 +606,9 @@ const wss = new WebSocketServer({ port: PORT }, () => {
   for (const ip of ips) printQr(ip);
   if (ips.length === 0) printQr('localhost');
   console.log(`  Workspace: ${activeWorkspace}\n`);
+  // opencode serve is started lazily on the first PROMPT (see runPrompt) rather
+  // than here, so a client that never sends a prompt (browsing files/git only,
+  // or a bridge test instance) never spawns it.
 });
 
 wss.on('connection', (ws, req) => {
@@ -265,18 +632,38 @@ wss.on('connection', (ws, req) => {
     if (eventType === 'CONNECT') {
       const deviceName = (payload && payload.deviceName) || 'unknown';
       const suppliedToken = (payload && payload.token) || frame.token || '';
-      const suppliedBuf = Buffer.from(String(suppliedToken));
-      const expectedBuf = Buffer.from(AUTH_TOKEN);
-      const tokenOk = suppliedBuf.length === expectedBuf.length && crypto.timingSafeEqual(suppliedBuf, expectedBuf);
-      if (!tokenOk) {
-        ws.close(4001, 'unauthorized');
+
+      // Case 1: an already-issued per-device token (the normal reconnect path).
+      const existingDevice = deviceTokens[suppliedToken];
+      if (existingDevice) {
+        ws.authenticated = true;
+        ws.deviceToken = suppliedToken;
+        ws.deviceId = existingDevice.deviceId;
+        ws.deviceName = existingDevice.deviceName || deviceName;
+        sessions[suppliedToken] = { name: deviceName, workspace: activeWorkspace };
+        ws.send(JSON.stringify({ eventType: 'CONNECTED', payload: { sessionId: suppliedToken, deviceId: existingDevice.deviceId, deviceName } }));
+        ws.send(JSON.stringify({ eventType: 'WORKSPACE_LIST', payload: workspaces }));
+        pushGitStatus(ws);
         return;
       }
-      ws.authenticated = true;
-      sessions[AUTH_TOKEN] = { name: deviceName, workspace: activeWorkspace };
-      ws.send(JSON.stringify({ eventType: 'CONNECTED', payload: { sessionId: AUTH_TOKEN, deviceName } }));
-      ws.send(JSON.stringify({ eventType: 'WORKSPACE_LIST', payload: [{ id: 'default', name: path.basename(activeWorkspace), path: activeWorkspace }] }));
-      pushGitStatus(ws);
+
+      // Case 2: the one-time pairing secret -> issue and persist a fresh
+      // per-device token, and tell the client to switch to it.
+      if (timingSafeTokenEquals(suppliedToken, AUTH_TOKEN)) {
+        const { token, deviceId } = issueDeviceToken(deviceName);
+        ws.authenticated = true;
+        ws.deviceToken = token;
+        ws.deviceId = deviceId;
+        ws.deviceName = deviceName;
+        sessions[token] = { name: deviceName, workspace: activeWorkspace };
+        ws.send(JSON.stringify({ eventType: 'CONNECTED', payload: { sessionId: token, deviceId, deviceName, issuedToken: token } }));
+        ws.send(JSON.stringify({ eventType: 'WORKSPACE_LIST', payload: workspaces }));
+        pushGitStatus(ws);
+        return;
+      }
+
+      // Neither a known device token nor the pairing secret.
+      ws.close(4001, 'unauthorized');
       return;
     }
 
@@ -287,7 +674,7 @@ wss.on('connection', (ws, req) => {
 
     switch (eventType) {
       case 'FETCH_WORKSPACES': {
-        ws.send(JSON.stringify({ eventType: 'WORKSPACE_LIST', payload: [{ id: 'default', name: path.basename(activeWorkspace), path: activeWorkspace }] }));
+        ws.send(JSON.stringify({ eventType: 'WORKSPACE_LIST', payload: workspaces }));
         break;
       }
       case 'OPEN_WORKSPACE': {
@@ -300,7 +687,32 @@ wss.on('connection', (ws, req) => {
             ws.send(JSON.stringify({ eventType: 'ERROR', payload: { message: `Workspace outside allowed root: ${dir}` } }));
           } else if (fs.existsSync(resolved) && fs.statSync(resolved).isDirectory()) {
             activeWorkspace = resolved;
+            if (!workspaces.some(w => w.path === resolved)) workspaces.push(makeWorkspaceEntry(resolved));
+            if (ocServeProc) startOpenCodeServer(); // already running -> restart bound to the new dir
             ws.send(JSON.stringify({ eventType: 'WORKSPACE_OPENED', payload: { path: resolved } }));
+            broadcast('WORKSPACE_LIST', workspaces);
+          } else {
+            ws.send(JSON.stringify({ eventType: 'ERROR', payload: { message: `Workspace not found: ${dir}` } }));
+          }
+        } catch (e) {
+          ws.send(JSON.stringify({ eventType: 'ERROR', payload: { message: e.message } }));
+        }
+        break;
+      }
+      case 'ADD_WORKSPACE': {
+        // Registers a directory in the workspace list without switching to
+        // it (Task 6.1.1) — e.g. the Android "add workspace" action, which
+        // shouldn't interrupt whatever is currently open.
+        const dir = String(payload);
+        try {
+          const resolved = path.resolve(dir);
+          const rootResolved = path.resolve(WORKSPACE_ROOT);
+          const inRoot = resolved === rootResolved || resolved.startsWith(rootResolved + path.sep);
+          if (!inRoot) {
+            ws.send(JSON.stringify({ eventType: 'ERROR', payload: { message: `Workspace outside allowed root: ${dir}` } }));
+          } else if (fs.existsSync(resolved) && fs.statSync(resolved).isDirectory()) {
+            if (!workspaces.some(w => w.path === resolved)) workspaces.push(makeWorkspaceEntry(resolved));
+            broadcast('WORKSPACE_LIST', workspaces);
           } else {
             ws.send(JSON.stringify({ eventType: 'ERROR', payload: { message: `Workspace not found: ${dir}` } }));
           }
@@ -347,38 +759,198 @@ wss.on('connection', (ws, req) => {
         delete pendingDiffs[file];
         break;
       }
+      case 'LIST_SESSIONS': {
+        (async () => {
+          try {
+            if (!ocServeProc) startOpenCodeServer();
+            await ocReadyPromise;
+            const res = await ocFetch('/session');
+            if (!res.ok) throw new Error(`list sessions returned ${res.status}`);
+            const sessions = await res.json();
+            ws.send(JSON.stringify({
+              eventType: 'SESSION_LIST',
+              payload: sessions.map(s => ({ id: s.id, title: s.title, updatedAt: s.time && s.time.updated }))
+            }));
+          } catch (e) {
+            ws.send(JSON.stringify({ eventType: 'ERROR', payload: { message: `LIST_SESSIONS failed: ${e.message}` } }));
+          }
+        })();
+        break;
+      }
+      case 'SWITCH_SESSION': {
+        const targetId = String(payload);
+        (async () => {
+          try {
+            if (!ocServeProc) startOpenCodeServer();
+            await ocReadyPromise;
+            const res = await ocFetch(`/session/${targetId}`);
+            if (!res.ok) throw new Error(`session not found (${res.status})`);
+            ocSessionId = targetId;
+            persistSessionId();
+            ws.send(JSON.stringify({ eventType: 'SESSION_SWITCHED', payload: { id: targetId } }));
+          } catch (e) {
+            ws.send(JSON.stringify({ eventType: 'ERROR', payload: { message: `SWITCH_SESSION failed: ${e.message}` } }));
+          }
+        })();
+        break;
+      }
+      case 'NEW_SESSION': {
+        const title = (payload && payload.title) || undefined;
+        (async () => {
+          try {
+            if (!ocServeProc) startOpenCodeServer();
+            await ocReadyPromise;
+            const res = await ocFetch('/session', { method: 'POST', body: JSON.stringify({ title: title || 'OpenCode Remote' }) });
+            if (!res.ok) throw new Error(`create session returned ${res.status}`);
+            const session = await res.json();
+            ocSessionId = session.id;
+            persistSessionId();
+            ws.send(JSON.stringify({ eventType: 'SESSION_SWITCHED', payload: { id: session.id } }));
+          } catch (e) {
+            ws.send(JSON.stringify({ eventType: 'ERROR', payload: { message: `NEW_SESSION failed: ${e.message}` } }));
+          }
+        })();
+        break;
+      }
+      case 'FORK_SESSION': {
+        // Confirmed endpoint (PROGRESS.md Phase 0): POST /session/{id}/fork
+        const sourceId = String(payload);
+        (async () => {
+          try {
+            if (!ocServeProc) startOpenCodeServer();
+            await ocReadyPromise;
+            const res = await ocFetch(`/session/${sourceId}/fork`, { method: 'POST' });
+            if (!res.ok) throw new Error(`fork returned ${res.status}`);
+            const forked = await res.json();
+            ocSessionId = forked.id;
+            persistSessionId();
+            ws.send(JSON.stringify({ eventType: 'SESSION_SWITCHED', payload: { id: forked.id } }));
+          } catch (e) {
+            ws.send(JSON.stringify({ eventType: 'ERROR', payload: { message: `FORK_SESSION failed: ${e.message}` } }));
+          }
+        })();
+        break;
+      }
+      case 'PERMISSION_REPLY': {
+        // Confirmed endpoint (PROGRESS.md Phase 0): POST /permission/{requestID}/reply
+        const { permissionId, decision } = payload || {};
+        if (!permissionId) break;
+        appendAuditLog('permission_decision', { permissionId, decision }, ws);
+        ocFetch(`/permission/${permissionId}/reply`, {
+          method: 'POST',
+          body: JSON.stringify({ decision })
+        }).catch(e => console.log(`  ! PERMISSION_REPLY failed: ${e.message}`));
+        break;
+      }
+      case 'QUESTION_REPLY': {
+        // Confirmed endpoint (PROGRESS.md Phase 0): POST /question/{requestID}/reply
+        const { questionId, answer } = payload || {};
+        if (!questionId) break;
+        appendAuditLog('question_reply', { questionId, answer }, ws);
+        ocFetch(`/question/${questionId}/reply`, {
+          method: 'POST',
+          body: JSON.stringify({ answer })
+        }).catch(e => console.log(`  ! QUESTION_REPLY failed: ${e.message}`));
+        break;
+      }
+      case 'QUESTION_REJECT': {
+        // Confirmed endpoint (PROGRESS.md Phase 0): POST /question/{requestID}/reject
+        const { questionId } = payload || {};
+        if (!questionId) break;
+        ocFetch(`/question/${questionId}/reject`, { method: 'POST' })
+          .catch(e => console.log(`  ! QUESTION_REJECT failed: ${e.message}`));
+        break;
+      }
       case 'ACCEPT_HUNK':
       case 'REJECT_HUNK': {
-        console.log(`  ! ${eventType} is not supported by this bridge (no per-hunk apply) - ignored`);
+        // [VERIFY LIVE, confirmed in PROGRESS.md Phase 0 finding 0.2.6] opencode
+        // serve v1.18.26's OpenAPI doc (probed via GET /doc) has no per-hunk or
+        // partial-apply endpoint anywhere — only whole-file diff endpoints exist
+        // (GET /session/{id}/diff, GET /vcs/diff, GET /vcs/diff/raw). Task 5.2 is
+        // therefore Won't do (unsupported upstream) per PROGRESS.md; this stays a
+        // documented no-op rather than a real implementation.
+        console.log(`  ! ${eventType} is not supported by this bridge (no per-hunk apply upstream) - ignored`);
         break;
       }
       case 'TERMINAL': {
         const command = String(payload);
         pushTerminalLine(`> ${command}`);
-        const shellBin = process.platform === 'win32' ? 'cmd' : '/bin/sh';
-        const shellFlag = process.platform === 'win32' ? '/c' : '-c';
-        const child = spawn(shellBin, [shellFlag, command], { cwd: activeWorkspace });
-        let out = '';
-        child.stdout.on('data', d => { out += d.toString(); });
-        child.stderr.on('data', d => { out += d.toString(); });
-        child.on('close', () => {
-          const outLines = out.trim().split('\n').filter(Boolean);
-          for (const l of outLines) pushTerminalLine(l);
-        });
-        child.on('error', err => pushTerminalLine(`Error: ${err.message}`));
+        appendAuditLog('terminal_command', { command }, ws);
+        runTerminalCommand(command).catch(err => pushTerminalLine(`Error: ${err.message}`));
         break;
       }
       case 'TERMINAL_RESIZE': {
-        // No PTY in this bridge; accepted and ignored (documented no-op).
+        const { cols, rows, ptyId } = payload || {};
+        const targetId = ptyId || activePtyId;
+        if (!targetId || !cols || !rows) break;
+        (async () => {
+          if (!ocServeProc) startOpenCodeServer();
+          await ocReadyPromise;
+          await ocFetch(`/pty/${targetId}`, { method: 'PUT', body: JSON.stringify({ size: { rows, cols } }) });
+        })().catch(e => console.log(`  ! TERMINAL_RESIZE failed: ${e.message}`));
+        break;
+      }
+      case 'REVOKE_TOKEN': {
+        // Task 8.2.1: removes one device's token from the store (identified
+        // by deviceId, not the token itself — the UI never needs to see raw
+        // tokens) and closes any of its currently-open sockets. The other
+        // paired devices and the pairing secret itself are unaffected.
+        const targetDeviceId = String(payload);
+        const targetEntry = Object.entries(deviceTokens).find(([, info]) => info.deviceId === targetDeviceId);
+        if (targetEntry) {
+          const [targetToken] = targetEntry;
+          delete deviceTokens[targetToken];
+          saveDeviceTokens();
+          for (const client of clients) {
+            if (client.deviceToken === targetToken) {
+              client.authenticated = false;
+              client.close(4001, 'revoked');
+            }
+          }
+          ws.send(JSON.stringify({ eventType: 'TOKEN_REVOKED', payload: { deviceId: targetDeviceId } }));
+        } else {
+          ws.send(JSON.stringify({ eventType: 'ERROR', payload: { message: 'Unknown device' } }));
+        }
+        break;
+      }
+      case 'LIST_DEVICES': {
+        // Task 8.2.2 support: lets the Android devices/settings screen show
+        // who's paired, without exposing raw tokens.
+        const list = Object.entries(deviceTokens).map(([, info]) => ({
+          deviceId: info.deviceId,
+          deviceName: info.deviceName,
+          issuedAt: info.issuedAt
+        }));
+        ws.send(JSON.stringify({ eventType: 'DEVICE_LIST', payload: list }));
+        break;
+      }
+      case 'FETCH_AUDIT_LOG': {
+        // Task 8.4.2 support: reads back recent audit log entries for the
+        // Android audit log screen. Returns the last 200 lines, newest last.
+        let entries = [];
+        try {
+          const lines = fs.readFileSync(AUDIT_LOG_PATH, 'utf-8').split('\n').filter(Boolean);
+          entries = lines.slice(-200).map(line => {
+            try { return JSON.parse(line); } catch { return null; }
+          }).filter(Boolean);
+        } catch {
+          entries = [];
+        }
+        ws.send(JSON.stringify({ eventType: 'AUDIT_LOG', payload: entries }));
         break;
       }
       case 'KILL_TASK': {
         const tid = String(payload);
         const task = tasks[tid];
         if (task) {
-          try { process.kill(task.pid); } catch {}
+          // Prompt tasks no longer have an OS pid to kill (they run inside the
+          // persistent opencode server) — abort the in-flight generation instead.
+          if (task.sessionId) {
+            ocFetch(`/session/${task.sessionId}/abort`, { method: 'POST' }).catch(() => {});
+          }
           delete tasks[tid];
           pushTaskRemoved(tid);
+          pushChatMessage('Cancelled', false, 'Cancelled', false);
         }
         break;
       }
@@ -391,6 +963,7 @@ wss.on('connection', (ws, req) => {
           break;
         }
         pushTerminalLine(`$ git ${gitCmd}`);
+        appendAuditLog('git_command', { command: gitCmd }, ws);
         const child = spawn('git', args, { cwd: activeWorkspace });
         let out = '';
         child.stdout.on('data', d => { out += d.toString(); });
@@ -418,6 +991,6 @@ wss.on('connection', (ws, req) => {
 
 process.on('SIGINT', () => {
   console.log('\n  Shutting down...');
-  if (opencodeProc) opencodeProc.kill();
+  if (ocServeProc) ocServeProc.kill();
   wss.close(() => process.exit(0));
 });
