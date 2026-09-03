@@ -28,8 +28,8 @@ accompanist = "0.36.0"
 camerax = "1.4.1"
 mlkitBarcodeScanning = "17.3.0"
 playServicesLocation = "21.3.0"
-firebaseBom = "33.7.0"
-composeUnstyled = "1.24.0"
+firebaseBom = "34.18.0"
+composeUnstyled = "2.5.0"
 junit = "4.13.2"
 androidxJunit = "1.2.1"
 espresso = "3.6.1"
@@ -95,10 +95,13 @@ play-services-location = { group = "com.google.android.gms", name = "play-servic
 firebase-bom = { group = "com.google.firebase", name = "firebase-bom", version.ref = "firebaseBom" }
 firebase-ai = { group = "com.google.firebase", name = "firebase-ai" }
 firebase-appcheck-recaptcha = { group = "com.google.firebase", name = "firebase-appcheck-playintegrity" }
-# NOTE: composeunstyled-* coordinates are a best guess — verify against the
-# Compose Unstyled release notes during H-BUILD.
-composeunstyled-primitives = { group = "com.composeunstyled", name = "primitives", version.ref = "composeUnstyled" }
-composeunstyled-theming = { group = "com.composeunstyled", name = "theming", version.ref = "composeUnstyled" }
+# Verified against Maven Central during H-BUILD: as of 2.x, Compose Unstyled
+# ships as separate per-component modules (group com.composables, not
+# com.composeunstyled), each still exposing the com.composeunstyled.* package
+# the app imports from (UnstyledButton, UnstyledTextField, UnstyledSwitch, etc).
+composeunstyled-button = { group = "com.composables", name = "composeunstyled-button", version.ref = "composeUnstyled" }
+composeunstyled-text-field = { group = "com.composables", name = "composeunstyled-text-field", version.ref = "composeUnstyled" }
+composeunstyled-toggle-switch = { group = "com.composables", name = "composeunstyled-toggle-switch", version.ref = "composeUnstyled" }
 junit = { group = "junit", name = "junit", version.ref = "junit" }
 robolectric = { group = "org.robolectric", name = "robolectric", version.ref = "robolectric" }
 roborazzi = { group = "io.github.takahirom.roborazzi", name = "roborazzi", version.ref = "roborazzi" }
@@ -107,6 +110,7 @@ roborazzi-junit-rule = { group = "io.github.takahirom.roborazzi", name = "robora
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }
+kotlin-android = { id = "org.jetbrains.kotlin.android", version.ref = "kotlin" }
 kotlin-compose = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }
 kotlin-serialization = { id = "org.jetbrains.kotlin.plugin.serialization", version.ref = "kotlin" }
 google-devtools-ksp = { id = "com.google.devtools.ksp", version.ref = "ksp" }

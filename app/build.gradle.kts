@@ -2,6 +2,7 @@ import com.google.gms.googleservices.GoogleServicesPlugin.MissingGoogleServicesS
 
 plugins {
   alias(libs.plugins.android.application)
+  alias(libs.plugins.kotlin.android)
   alias(libs.plugins.kotlin.compose)
   alias(libs.plugins.google.devtools.ksp)
   alias(libs.plugins.roborazzi)
@@ -112,8 +113,9 @@ dependencies {
   implementation(libs.androidx.navigation.compose)
   implementation(libs.androidx.room.ktx)
   implementation(libs.androidx.room.runtime)
-  implementation(libs.composeunstyled.primitives)
-  implementation(libs.composeunstyled.theming)
+  implementation(libs.composeunstyled.button)
+  implementation(libs.composeunstyled.text.field)
+  implementation(libs.composeunstyled.toggle.switch)
   // implementation(libs.coil.compose)
   implementation(libs.converter.moshi)
   implementation(libs.firebase.ai)
@@ -143,4 +145,15 @@ dependencies {
   debugImplementation(libs.androidx.compose.ui.tooling)
   "ksp"(libs.androidx.room.compiler)
   "ksp"(libs.moshi.kotlin.codegen)
+}
+
+configurations.all {
+  resolutionStrategy {
+    // Compose Unstyled's published module metadata declares a runtime-scope
+    // kotlin-stdlib dependency newer than this project's Kotlin compiler
+    // (2.2.20) can read. kotlin-stdlib is backward compatible, so pin it to
+    // the project's own Kotlin version rather than bumping the whole
+    // Kotlin/KSP toolchain just to satisfy that metadata constraint.
+    force("org.jetbrains.kotlin:kotlin-stdlib:2.2.20")
+  }
 }
