@@ -45,11 +45,11 @@ correct.
 | 3 | 3.3.2 Android session picker screen | Done | `gradlew :app:assembleDebug` → BUILD SUCCESSFUL | New Sessions tab (SessionsScreen.kt) wired into NavRoutes/MainDashboardScreen; manual on-device tap-through not performed (no device connected) | e843f96 |
 | 3 | 3.4.1 Stretch: session forking | Done | `bridge npm test` → "FORK_SESSION creates a forked session and switches to it (Task 3.4 stretch)" passes; `gradlew :app:assembleDebug` → BUILD SUCCESSFUL | FORK_SESSION bridge case + fixture `/session/:id/fork` route + Android forkSession()/fork IconButton in SessionsScreen | e843f96 |
 | 3 | Phase 3 merge gate (baseline rerun) | Done | `bridge npm test` → 25/25 pass; `gradlew :app:testDebugUnitTest` → BUILD SUCCESSFUL; `gradlew :app:assembleDebug` → BUILD SUCCESSFUL | Merged into remote-control-groundwork | e843f96 |
-| 4 | 4.1.1 Bridge PTY-backed TERMINAL | Not started | | | |
-| 4 | 4.1.2 Bridge real TERMINAL_RESIZE | Not started | | | |
-| 4 | 4.2.1 Android streaming terminal output (append not replace) | Not started | | | |
-| 4 | 4.2.2 Android wire TERMINAL_RESIZE to real size changes | Not started | | | |
-| 4 | Phase 4 merge gate (baseline rerun) | Not started | | | |
+| 4 | 4.1.1 Bridge PTY-backed TERMINAL | Done | `bridge npm test` → terminal.test.js "TERMINAL command creates a PTY and streams output back incrementally" passes (asserts >1 TERMINAL_OUTPUT frame, POST /pty called) | Live-confirmed transport is a WebSocket at `/pty/{id}/connect` (not SSE/polling); NUL-prefixed control frames filtered out | 6b46790 |
+| 4 | 4.1.2 Bridge real TERMINAL_RESIZE | Done | `bridge npm test` → "TERMINAL_RESIZE calls the PTY resize endpoint for the active PTY" passes | `PUT /pty/{id} {size:{rows,cols}}` confirmed in live OpenAPI schema; resizes the most-recently-created PTY (`activePtyId`) | 6b46790 |
+| 4 | 4.2.1 Android streaming terminal output (append not replace) | Done | `grep -n "terminalOutput" ...` → single append-only consumer (`outputLines = outputLines + terminalOutput`) already present; no change needed | | 6b46790 |
+| 4 | 4.2.2 Android wire TERMINAL_RESIZE to real size changes | Done | `grep -n "TERMINAL_RESIZE" ...RemoteSessionManager.kt` shows `resizeTerminal()`; `gradlew :app:assembleDebug` → BUILD SUCCESSFUL | Wired to `onSizeChanged` on the terminal surface (approximate monospace cols/rows from pixel size) | 6b46790 |
+| 4 | Phase 4 merge gate (baseline rerun) | Done | `bridge npm test` → 26/26 pass; `gradlew :app:testDebugUnitTest` → BUILD SUCCESSFUL; `gradlew :app:assembleDebug` → BUILD SUCCESSFUL | Merged into remote-control-groundwork | 6b46790 |
 | 5 | 5.1.1 Android pendingDiffs list (not single value) | Not started | | | |
 | 5 | 5.1.2 Android UI renders all pending diffs | Not started | | | |
 | 5 | 5.2.1 Per-hunk accept/reject (conditional) | Not started | | | |
