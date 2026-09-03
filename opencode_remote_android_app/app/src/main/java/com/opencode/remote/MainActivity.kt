@@ -6,7 +6,6 @@ import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.collectAsState
@@ -22,6 +21,7 @@ import com.opencode.remote.ui.components.ConnectionBanner
 import com.opencode.remote.ui.navigation.NavRoutes
 import com.opencode.remote.ui.screens.pairing.PairingScreen
 import com.opencode.remote.ui.screens.workspace.WorkspaceListScreen
+import com.opencode.remote.ui.theme.AppTheme
 
 class MainActivity : ComponentActivity() {
     private lateinit var tokenStorage: TokenStorage
@@ -34,7 +34,7 @@ class MainActivity : ComponentActivity() {
         sessionManager = RemoteSessionManager()
 
         setContent {
-            MaterialTheme {
+            AppTheme {
                 Surface(modifier = Modifier.fillMaxSize()) {
                     val navController = rememberNavController()
                     val connectionState by sessionManager.connectionState.collectAsState()
