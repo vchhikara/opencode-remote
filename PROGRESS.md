@@ -55,10 +55,10 @@ correct.
 | 5 | 5.2.1 Per-hunk accept/reject (conditional) | Won't do (unsupported upstream) | `/doc` probe (Phase 0, 0.2.6): no per-hunk/partial-apply endpoint exists — only whole-file diff endpoints | ACCEPT_HUNK/REJECT_HUNK comment in bridge/main.js updated to cite this finding directly | e0c466e |
 | 5 | 5.3.1 Live diff preview (depends on Phase 1) | Done | `bridge npm test` → stream.test.js asserts a live FILE_DIFF frame from the completed edit-tool STREAM_TOOL_RESULT, before the final diff fetch | Live probe (real opencode serve, real file edit) confirmed a completed 'edit' tool's `state.metadata.filediff = {file, patch, additions, deletions}` | e0c466e |
 | 5 | Phase 5 merge gate (baseline rerun) | Done | `bridge npm test` → 26/26 pass; `gradlew :app:testDebugUnitTest` → BUILD SUCCESSFUL; `gradlew :app:assembleDebug` → BUILD SUCCESSFUL | Merged into remote-control-groundwork | e0c466e |
-| 6 | 6.1.1 Bridge multi-workspace tracking | Not started | | | |
-| 6 | 6.1.2 Bridge per-workspace session strategy decision | Not started | | | |
-| 6 | 6.2.1 Android meaningful WorkspaceListScreen | Not started | | | |
-| 6 | Phase 6 merge gate (baseline rerun) | Not started | | | |
+| 6 | 6.1.1 Bridge multi-workspace tracking | Done | `bridge npm test` → `paths.test.js` unmodified still passes; new `workspaces.test.js` (ADD_WORKSPACE registers + rejects outside root) passes; 28/28 total | `workspaces` list added; `activeWorkspace`/`resolveInsideWorkspace` untouched | 31be032 |
+| 6 | 6.1.2 Bridge per-workspace session strategy decision | Done | Decision + citation recorded in a `bridge/main.js` comment above the `workspaces` declaration | Chose "one opencode serve + one persisted session per workspace" over `/project`-scoping, per the 0.2.7 finding and this bridge's existing restart-on-switch architecture | 31be032 |
+| 6 | 6.2.1 Android meaningful WorkspaceListScreen | Done | `gradlew :app:testDebugUnitTest --tests "*SessionManagerTest*"` → BUILD SUCCESSFUL (new testMultiItemWorkspaceListIsFullyReflected); `gradlew :app:assembleDebug` → BUILD SUCCESSFUL | Screen already rendered the full list (LazyColumn over `workspaces`) — added the "add workspace" dialog/action, the part that was actually missing | 31be032 |
+| 6 | Phase 6 merge gate (baseline rerun) | Done | `bridge npm test` → 28/28 pass; `gradlew :app:testDebugUnitTest` → BUILD SUCCESSFUL; `gradlew :app:assembleDebug` → BUILD SUCCESSFUL | Merged into remote-control-groundwork | 31be032 |
 | 7 | 7.1.1 Bridge notification hook (completion/permission/error) | Not started | | | |
 | 7 | 7.1.2 Android push handling + system notification | Not started | | | |
 | 7 | 7.2.1 Android foreground service / reconnect-on-resume | Not started | | | |
