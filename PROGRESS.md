@@ -29,14 +29,14 @@ correct.
 | 1 | 1.2.1 Android streaming state in RemoteSessionManager | Done | `gradlew :app:testDebugUnitTest --tests "*SessionManagerTest*"` → BUILD SUCCESSFUL (3 new tests) | Added StreamTextDeltaDto/StreamToolCallDto/StreamToolResultDto/StreamingMessageDto | c773746 |
 | 1 | 1.2.2 Android ChatScreen streaming bubble + tool status | Done (automated part) | `gradlew :app:assembleDebug -Dorg.gradle.java.home=...` → BUILD SUCCESSFUL | Manual on-device confirmation NOT performed this session (no device connected) — automated exit criterion is the merge gate per plan; manual check remains outstanding | c773746 |
 | 1 | Phase 1 merge gate (baseline rerun) | Done | bridge npm test → 15/15; `testDebugUnitTest` → BUILD SUCCESSFUL; `assembleDebug` → BUILD SUCCESSFUL | | c773746 |
-| 2 | 2.1.1 Bridge relay PERMISSION_REQUEST/QUESTION_REQUEST | Not started | | | |
-| 2 | 2.1.2 Bridge handle PERMISSION_REPLY/QUESTION_REPLY | Not started | | | |
-| 2 | 2.1.3 Check/gate existing auto-approve | Not started | | | |
-| 2 | 2.2.1 Android permission/question DTOs + flows | Not started | | | |
-| 2 | 2.2.2 Android permission/question UI card | Not started | | | |
-| 2 | 2.2.3 KILL_TASK produces visible "Cancelled" message | Not started | | | |
-| 2 | 2.3.1 [VERIFY LIVE] mid-task steering / message queuing | Not started | | | |
-| 2 | Phase 2 merge gate (baseline rerun) | Not started | | | |
+| 2 | 2.1.1 Bridge relay PERMISSION_REQUEST/QUESTION_REQUEST | Done | `bridge npm test` → permission.test.js 1st test pass | Envelope key read defensively (properties\|\|data) — live permission event not observed in probe (bash ran without approval prompt); shape is schema-confirmed only | 33b5ff1 |
+| 2 | 2.1.2 Bridge handle PERMISSION_REPLY/QUESTION_REPLY | Done | `bridge npm test` → permission.test.js 2nd/3rd tests pass, asserting real POST calls via fixture's `/__requests` log | | 33b5ff1 |
+| 2 | 2.1.3 Check/gate existing auto-approve | Done | `grep -n "'--auto'\|auto-approve\|autoApprove" bridge/main.js` → no match | No existing auto-approve flag found; nothing to change | 33b5ff1 |
+| 2 | 2.2.1 Android permission/question DTOs + flows | Done | `gradlew testDebugUnitTest --tests "*SessionManagerTest*"` → BUILD SUCCESSFUL | | d8bbc69 |
+| 2 | 2.2.2 Android permission/question UI card | Done (automated part) | `gradlew assembleDebug` → BUILD SUCCESSFUL | Manual on-device tap-through NOT performed (no device connected) | d8bbc69 |
+| 2 | 2.2.3 KILL_TASK produces visible "Cancelled" message | Done | `grep -n "case 'KILL_TASK'" -A 12 bridge/main.js` shows pushChatMessage call; permission.test.js "KILL_TASK pushes a Cancelled chat message" passes | | 33b5ff1 |
+| 2 | 2.3.1 [VERIFY LIVE] mid-task steering / message queuing | Done | Live probe: two concurrent `POST /session/{id}/message` on same session both → HTTP 200, both completed. Bridge test "two back-to-back PROMPTs..." passes | Server queues rather than rejects; bridge already had no guard blocking concurrent prompts — no code change needed | d8bbc69 |
+| 2 | Phase 2 merge gate (baseline rerun) | Done | bridge npm test → 20/20; `testDebugUnitTest` → BUILD SUCCESSFUL; `assembleDebug` → BUILD SUCCESSFUL | | 24b8f5f |
 | 3 | 3.1.1 Bridge LIST_SESSIONS | Not started | | | |
 | 3 | 3.1.2 Bridge SWITCH_SESSION | Not started | | | |
 | 3 | 3.1.3 Bridge NEW_SESSION | Not started | | | |
