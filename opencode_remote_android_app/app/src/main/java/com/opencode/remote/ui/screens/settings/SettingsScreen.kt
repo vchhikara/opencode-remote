@@ -1,12 +1,16 @@
 package com.opencode.remote.ui.screens.settings
 
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.opencode.remote.data.dto.AuditLogEntryDto
+import com.opencode.remote.data.dto.DeviceDto
 import com.opencode.remote.data.network.RemoteSessionManager
 import com.opencode.remote.data.storage.TokenStorage
 
@@ -18,8 +22,15 @@ fun SettingsScreen(
     onDisconnect: () -> Unit
 ) {
     val activeWorkspace by sessionManager.activeWorkspace.collectAsState()
+    val devices by sessionManager.devices.collectAsState()
+    val auditLog by sessionManager.auditLog.collectAsState()
     val credentials = tokenStorage.getLastCredentials()
     var showForgetDialog by remember { mutableStateOf(false) }
+    var showAuditLog by remember { mutableStateOf(false) }
+
+    LaunchedEffect(Unit) {
+        sessionManager.listDevices()
+    }
 
     Scaffold(
         topBar = {
@@ -43,6 +54,31 @@ fun SettingsScreen(
                     Spacer(modifier = Modifier.height(8.dp))
                     Text("Active Workspace:", fontWeight = FontWeight.Bold)
                     Text(activeWorkspace ?: "None selected")
+                }
+            }
+
+            Text("Paired Devices", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+            if (devices.isEmpty()) {
+                Text("No paired devices found.")
+            } else {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    devices.forEach { device -> DeviceRow(device, onRevoke = { sessionManager.revokeToken(device.deviceId) }) }
+                }
+            }
+
+            TextButton(onClick = {
+                showAuditLog = !showAuditLog
+                if (showAuditLog) sessionManager.fetchAuditLog()
+            }) {
+                Text(if (showAuditLog) "Hide Audit Log" else "Show Audit Log")
+            }
+            if (showAuditLog) {
+                if (auditLog.isEmpty()) {
+                    Text("No audit log entries yet.")
+                } else {
+                    LazyColumn(modifier = Modifier.heightIn(max = 240.dp)) {
+                        items(auditLog.asReversed()) { entry -> AuditLogRow(entry) }
+                    }
                 }
             }
 
@@ -93,5 +129,32 @@ fun SettingsScreen(
                 }
             }
         )
+    }
+}
+
+@Composable
+private fun DeviceRow(device: DeviceDto, onRevoke: () -> Unit) {
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier.padding(16.dp).fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column {
+                Text(device.deviceName, fontWeight = FontWeight.Bold)
+                Text("Device ID: ${device.deviceId}", style = MaterialTheme.typography.bodySmall)
+            }
+            TextButton(onClick = onRevoke) {
+                Text("Revoke", color = MaterialTheme.colorScheme.error)
+            }
+        }
+    }
+}
+
+@Composable
+private fun AuditLogRow(entry: AuditLogEntryDto) {
+    Column(modifier = Modifier.padding(vertical = 4.dp)) {
+        Text("${entry.timestamp} · ${entry.kind}", style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Bold)
+        Text("by ${entry.deviceName ?: "unknown"} — ${entry.detail?.toString() ?: ""}", style = MaterialTheme.typography.bodySmall)
     }
 }

@@ -68,6 +68,34 @@ test('PERMISSION_REPLY calls POST /permission/{id}/reply on the opencode server'
   await stopBridge(child);
 });
 
+// Task 8.3.1: confirms the bridge never substitutes its own decision for the
+// user's — a 'deny' PERMISSION_REPLY is relayed to opencode serve verbatim
+// as 'deny', proving there's no blanket-auto-approve path silently
+// upgrading it to 'allow' (the 2.1.3 finding: no such path exists in
+// bridge/main.js — this test is the passing evidence for that, re-checked
+// after Phase 8).
+test('a denied PERMISSION_REPLY is relayed as deny, not silently auto-approved', async () => {
+  const { child, port, ocPort, token } = await startWithFakeOpencode();
+  const { ws } = await connectAndAuth(port, token);
+  ws.send(JSON.stringify({ eventType: 'PROMPT', payload: 'say hi' }));
+  for (let i = 0; i < 50; i++) {
+    const msg = await nextMessageOrTimeoutSafe(ws, 1000);
+    if (msg && msg.eventType === 'PERMISSION_REQUEST') break;
+  }
+
+  ws.send(JSON.stringify({ eventType: 'PERMISSION_REPLY', payload: { permissionId: 'per_fake_1', decision: 'deny' } }));
+  await new Promise(r => setTimeout(r, 500));
+
+  const res = await fetch(`http://127.0.0.1:${ocPort}/__requests`);
+  const requests = await res.json();
+  const found = requests.find(r => r.method === 'POST' && r.url === '/permission/per_fake_1/reply');
+  assert.ok(found, `expected a POST /permission/per_fake_1/reply call, got: ${JSON.stringify(requests)}`);
+  assert.strictEqual(found.body.decision, 'deny', 'the bridge must forward "deny" as-is, never upgrading it to "allow"');
+
+  ws.close();
+  await stopBridge(child);
+});
+
 test('QUESTION_REPLY calls POST /question/{id}/reply on the opencode server', async () => {
   const { child, port, ocPort, token } = await startWithFakeOpencode();
   const { ws } = await connectAndAuth(port, token);

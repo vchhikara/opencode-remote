@@ -12,12 +12,75 @@ const OPCODE = process.env.OPCODE || 'opencode';
 const AUTH_TOKEN = process.env.BRIDGE_TOKEN || crypto.randomBytes(32).toString('hex');
 console.log(`  Auth token: ${AUTH_TOKEN}`);
 
+// --- Per-device tokens (Task 8.1) ---
+// AUTH_TOKEN above is now only a one-time *pairing* secret (what the QR code
+// carries), not something every future connection is checked against
+// forever. The first CONNECT that presents it gets issued a distinct
+// per-device token, persisted here; every later CONNECT authenticates with
+// that device's own token instead. This is what makes per-device revocation
+// (Task 8.2) meaningful — revoking one device's token doesn't affect any
+// other paired device or require re-pairing everyone.
+const DEVICE_STORE_PATH = process.env.DEVICE_STORE_PATH || path.join(os.homedir(), '.opencode-remote-devices.json');
+let deviceTokens = loadDeviceTokens();
+
+function loadDeviceTokens() {
+  try {
+    return JSON.parse(fs.readFileSync(DEVICE_STORE_PATH, 'utf-8'));
+  } catch {
+    return {};
+  }
+}
+
+function saveDeviceTokens() {
+  try {
+    fs.writeFileSync(DEVICE_STORE_PATH, JSON.stringify(deviceTokens, null, 2));
+  } catch (e) {
+    console.log(`  ! failed to persist device tokens: ${e.message}`);
+  }
+}
+
+function issueDeviceToken(deviceName) {
+  const token = crypto.randomBytes(32).toString('hex');
+  const deviceId = crypto.randomUUID();
+  deviceTokens[token] = { deviceId, deviceName, issuedAt: Date.now() };
+  saveDeviceTokens();
+  return { token, deviceId };
+}
+
+function timingSafeTokenEquals(a, b) {
+  const bufA = Buffer.from(String(a || ''));
+  const bufB = Buffer.from(String(b || ''));
+  return bufA.length === bufB.length && bufA.length > 0 && crypto.timingSafeEqual(bufA, bufB);
+}
+
 const clients = new Set();
 let sessions = {};
 let activeWorkspace = process.cwd();
 let pendingDiffs = {};
 let tasks = {};
 const WORKSPACE_ROOT = process.env.WORKSPACE_ROOT || process.cwd();
+
+// --- Audit log (Task 8.4.1) ---
+// Append-only JSON-lines log of every approved command/edit: permission
+// decisions (Phase 2), git commands executed, terminal commands executed.
+// Path is env-configurable (test isolation), following the DEVICE_STORE_PATH
+// pattern; defaults to a file under WORKSPACE_ROOT.
+const AUDIT_LOG_PATH = process.env.AUDIT_LOG_PATH || path.join(WORKSPACE_ROOT, '.opencode-remote-audit.log');
+
+function appendAuditLog(kind, detail, ws) {
+  const entry = {
+    timestamp: new Date().toISOString(),
+    kind,
+    detail,
+    deviceId: (ws && ws.deviceId) || null,
+    deviceName: (ws && ws.deviceName) || null
+  };
+  try {
+    fs.appendFileSync(AUDIT_LOG_PATH, JSON.stringify(entry) + '\n');
+  } catch (e) {
+    console.log(`  ! failed to append audit log: ${e.message}`);
+  }
+}
 
 // --- Multi-workspace tracking (Task 6.1) ---
 // Decision (6.1.2), grounded in the Phase 0 0.2.7 finding that `/project`
@@ -569,18 +632,38 @@ wss.on('connection', (ws, req) => {
     if (eventType === 'CONNECT') {
       const deviceName = (payload && payload.deviceName) || 'unknown';
       const suppliedToken = (payload && payload.token) || frame.token || '';
-      const suppliedBuf = Buffer.from(String(suppliedToken));
-      const expectedBuf = Buffer.from(AUTH_TOKEN);
-      const tokenOk = suppliedBuf.length === expectedBuf.length && crypto.timingSafeEqual(suppliedBuf, expectedBuf);
-      if (!tokenOk) {
-        ws.close(4001, 'unauthorized');
+
+      // Case 1: an already-issued per-device token (the normal reconnect path).
+      const existingDevice = deviceTokens[suppliedToken];
+      if (existingDevice) {
+        ws.authenticated = true;
+        ws.deviceToken = suppliedToken;
+        ws.deviceId = existingDevice.deviceId;
+        ws.deviceName = existingDevice.deviceName || deviceName;
+        sessions[suppliedToken] = { name: deviceName, workspace: activeWorkspace };
+        ws.send(JSON.stringify({ eventType: 'CONNECTED', payload: { sessionId: suppliedToken, deviceId: existingDevice.deviceId, deviceName } }));
+        ws.send(JSON.stringify({ eventType: 'WORKSPACE_LIST', payload: workspaces }));
+        pushGitStatus(ws);
         return;
       }
-      ws.authenticated = true;
-      sessions[AUTH_TOKEN] = { name: deviceName, workspace: activeWorkspace };
-      ws.send(JSON.stringify({ eventType: 'CONNECTED', payload: { sessionId: AUTH_TOKEN, deviceName } }));
-      ws.send(JSON.stringify({ eventType: 'WORKSPACE_LIST', payload: workspaces }));
-      pushGitStatus(ws);
+
+      // Case 2: the one-time pairing secret -> issue and persist a fresh
+      // per-device token, and tell the client to switch to it.
+      if (timingSafeTokenEquals(suppliedToken, AUTH_TOKEN)) {
+        const { token, deviceId } = issueDeviceToken(deviceName);
+        ws.authenticated = true;
+        ws.deviceToken = token;
+        ws.deviceId = deviceId;
+        ws.deviceName = deviceName;
+        sessions[token] = { name: deviceName, workspace: activeWorkspace };
+        ws.send(JSON.stringify({ eventType: 'CONNECTED', payload: { sessionId: token, deviceId, deviceName, issuedToken: token } }));
+        ws.send(JSON.stringify({ eventType: 'WORKSPACE_LIST', payload: workspaces }));
+        pushGitStatus(ws);
+        return;
+      }
+
+      // Neither a known device token nor the pairing secret.
+      ws.close(4001, 'unauthorized');
       return;
     }
 
@@ -752,6 +835,7 @@ wss.on('connection', (ws, req) => {
         // Confirmed endpoint (PROGRESS.md Phase 0): POST /permission/{requestID}/reply
         const { permissionId, decision } = payload || {};
         if (!permissionId) break;
+        appendAuditLog('permission_decision', { permissionId, decision }, ws);
         ocFetch(`/permission/${permissionId}/reply`, {
           method: 'POST',
           body: JSON.stringify({ decision })
@@ -762,6 +846,7 @@ wss.on('connection', (ws, req) => {
         // Confirmed endpoint (PROGRESS.md Phase 0): POST /question/{requestID}/reply
         const { questionId, answer } = payload || {};
         if (!questionId) break;
+        appendAuditLog('question_reply', { questionId, answer }, ws);
         ocFetch(`/question/${questionId}/reply`, {
           method: 'POST',
           body: JSON.stringify({ answer })
@@ -790,6 +875,7 @@ wss.on('connection', (ws, req) => {
       case 'TERMINAL': {
         const command = String(payload);
         pushTerminalLine(`> ${command}`);
+        appendAuditLog('terminal_command', { command }, ws);
         runTerminalCommand(command).catch(err => pushTerminalLine(`Error: ${err.message}`));
         break;
       }
@@ -802,6 +888,55 @@ wss.on('connection', (ws, req) => {
           await ocReadyPromise;
           await ocFetch(`/pty/${targetId}`, { method: 'PUT', body: JSON.stringify({ size: { rows, cols } }) });
         })().catch(e => console.log(`  ! TERMINAL_RESIZE failed: ${e.message}`));
+        break;
+      }
+      case 'REVOKE_TOKEN': {
+        // Task 8.2.1: removes one device's token from the store (identified
+        // by deviceId, not the token itself — the UI never needs to see raw
+        // tokens) and closes any of its currently-open sockets. The other
+        // paired devices and the pairing secret itself are unaffected.
+        const targetDeviceId = String(payload);
+        const targetEntry = Object.entries(deviceTokens).find(([, info]) => info.deviceId === targetDeviceId);
+        if (targetEntry) {
+          const [targetToken] = targetEntry;
+          delete deviceTokens[targetToken];
+          saveDeviceTokens();
+          for (const client of clients) {
+            if (client.deviceToken === targetToken) {
+              client.authenticated = false;
+              client.close(4001, 'revoked');
+            }
+          }
+          ws.send(JSON.stringify({ eventType: 'TOKEN_REVOKED', payload: { deviceId: targetDeviceId } }));
+        } else {
+          ws.send(JSON.stringify({ eventType: 'ERROR', payload: { message: 'Unknown device' } }));
+        }
+        break;
+      }
+      case 'LIST_DEVICES': {
+        // Task 8.2.2 support: lets the Android devices/settings screen show
+        // who's paired, without exposing raw tokens.
+        const list = Object.entries(deviceTokens).map(([, info]) => ({
+          deviceId: info.deviceId,
+          deviceName: info.deviceName,
+          issuedAt: info.issuedAt
+        }));
+        ws.send(JSON.stringify({ eventType: 'DEVICE_LIST', payload: list }));
+        break;
+      }
+      case 'FETCH_AUDIT_LOG': {
+        // Task 8.4.2 support: reads back recent audit log entries for the
+        // Android audit log screen. Returns the last 200 lines, newest last.
+        let entries = [];
+        try {
+          const lines = fs.readFileSync(AUDIT_LOG_PATH, 'utf-8').split('\n').filter(Boolean);
+          entries = lines.slice(-200).map(line => {
+            try { return JSON.parse(line); } catch { return null; }
+          }).filter(Boolean);
+        } catch {
+          entries = [];
+        }
+        ws.send(JSON.stringify({ eventType: 'AUDIT_LOG', payload: entries }));
         break;
       }
       case 'KILL_TASK': {
@@ -828,6 +963,7 @@ wss.on('connection', (ws, req) => {
           break;
         }
         pushTerminalLine(`$ git ${gitCmd}`);
+        appendAuditLog('git_command', { command: gitCmd }, ws);
         const child = spawn('git', args, { cwd: activeWorkspace });
         let out = '';
         child.stdout.on('data', d => { out += d.toString(); });

@@ -240,4 +240,29 @@ class SessionManagerTest {
         assertEquals(gitStatus, manager.gitStatus.value)
         assertEquals(false, manager.gitStatus.value?.isClean)
     }
+
+    @Test
+    fun testDeviceListEventIsRoutedIntoDevicesStateFlow() = testScope.runTest {
+        // Task 8.2.2: LIST_DEVICES's DEVICE_LIST reply must be routed into a
+        // StateFlow the devices/settings screen can render.
+        assertTrue(manager.devices.value.isEmpty())
+        val devices = listOf(
+            DeviceDto("dev1", "phone-a", 1000L),
+            DeviceDto("dev2", "phone-b", 2000L)
+        )
+        simulateIncomingMessage(createFrame("DEVICE_LIST", devices, json))
+        assertEquals(devices, manager.devices.value)
+    }
+
+    @Test
+    fun testAuditLogEventIsRoutedIntoAuditLogStateFlow() = testScope.runTest {
+        // Task 8.4.2: FETCH_AUDIT_LOG's AUDIT_LOG reply must be routed into a
+        // StateFlow the audit log screen can render.
+        assertTrue(manager.auditLog.value.isEmpty())
+        val entries = listOf(
+            AuditLogEntryDto(timestamp = "2026-01-01T00:00:00.000Z", kind = "git_command", deviceName = "phone-a")
+        )
+        simulateIncomingMessage(createFrame("AUDIT_LOG", entries, json))
+        assertEquals(entries, manager.auditLog.value)
+    }
 }

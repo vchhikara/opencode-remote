@@ -58,6 +58,18 @@ fun MainDashboardScreen(
     val navController = rememberNavController()
     var selectedIndex by remember { mutableStateOf(0) }
     val pendingDiff by sessionManager.pendingDiff.collectAsState()
+    val issuedToken by sessionManager.issuedToken.collectAsState()
+
+    // Task 8.1 close-the-loop: when the bridge issues a fresh per-device
+    // token in place of the pairing secret we connected with, persist it —
+    // otherwise a later reconnect (or REVOKE_TOKEN on the old pairing
+    // secret) would strand this device unable to authenticate.
+    LaunchedEffect(issuedToken) {
+        val fresh = issuedToken ?: return@LaunchedEffect
+        tokenStorage.getLastCredentials()?.let { creds ->
+            tokenStorage.saveCredentials(creds.host, creds.port, fresh, creds.deviceName)
+        }
+    }
 
     // Reconnect-on-resume (Task 7.2.1): a backgrounded app's socket can die
     // silently (OS-killed connection, network change) without the app ever
