@@ -53,7 +53,7 @@ class WsClient(private val scope: CoroutineScope) {
         port: Int,
         onSession: suspend DefaultClientWebSocketSession.(markConnected: () -> Unit) -> Unit
     ) {
-        if (_connectionState.value is ConnectionState.Connected || _connectionState.value is ConnectionState.Connecting) return
+        if (shouldSkipConnect(_connectionState.value)) return
         sessionJob?.cancel()
         sessionJob = scope.launch {
             var attempt = 0
@@ -89,5 +89,15 @@ class WsClient(private val scope: CoroutineScope) {
         sessionJob = null
         sendAction = null
         _connectionState.value = ConnectionState.Disconnected
+    }
+
+    companion object {
+        /** The guard `connect()` uses to stay idempotent (Task 7.2.1): a call
+         *  that arrives while already connected or mid-connect is a safe
+         *  no-op rather than starting a second, competing session loop.
+         *  Pulled out as a pure function so it's unit-testable without a
+         *  real socket. */
+        internal fun shouldSkipConnect(state: ConnectionState): Boolean =
+            state is ConnectionState.Connected || state is ConnectionState.Connecting
     }
 }

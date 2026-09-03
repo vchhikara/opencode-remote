@@ -165,6 +165,19 @@ function pushChatMessage(msg, isUser, actionDesc, details) {
   broadcast('CHAT_MESSAGE', { id: Date.now().toString(), text: msg, isUser, actionDescription: actionDesc || '', hasDetails: !!details });
 }
 
+// --- Push notification hook (Task 7.1.1) ---
+// No FCM project/credentials exist in this environment to send a real push,
+// so this hook's body is a placeholder — it broadcasts a NOTIFY frame over
+// the same WS connected clients already use (covers the foregrounded-client
+// case today) and is the one seam a real FCM send would plug into later
+// (swap the body for an actual FCM API call; every call site below stays
+// unchanged). Manual on-device background-push delivery is therefore NOT
+// claimed Done here — see PROGRESS.md.
+function notifyExternal(kind, detail) {
+  console.log(`  [notify] ${kind}: ${JSON.stringify(detail).slice(0, 200)}`);
+  broadcast('NOTIFY', { kind, detail });
+}
+
 function pushFileDiff(fileName, diffText) {
   pendingDiffs[fileName] = diffText;
   broadcast('FILE_DIFF', { fileName, diffText });
@@ -343,6 +356,7 @@ function relaySseEvent(evt, emit) {
       tool: d.permission || (d.tool && d.tool.callID) || null,
       input: d
     });
+    notifyExternal('permission_request', { permissionId: d.id, sessionId: d.sessionID });
     return;
   }
   if (evt.type === 'question.asked' || evt.type === 'question.v2.asked') {
@@ -439,6 +453,7 @@ async function runPrompt(prompt) {
     if (serverError) {
       const detail = (serverError.data && serverError.data.message) || serverError.name || 'unknown error';
       pushChatMessage(`Error (${serverError.name || 'provider error'}): ${detail}`, false, 'Error', false);
+      notifyExternal('error', { taskId, message: detail });
     } else {
       const text = (result.parts || [])
         .filter(p => p.type === 'text' && p.text)
@@ -465,9 +480,11 @@ async function runPrompt(prompt) {
       ? `opencode did not respond within ${Math.round(OC_PROMPT_TIMEOUT_MS / 1000)}s — check the model/provider config on the bridge machine`
       : `Error: ${e.message}`;
     pushChatMessage(message, false, 'Error', false);
+    notifyExternal('error', { taskId, message });
   } finally {
     delete tasks[taskId];
     pushTaskRemoved(taskId);
+    notifyExternal('task_completed', { taskId });
     pushAgentState('Idle');
   }
 }
