@@ -27,6 +27,8 @@ import com.opencode.remote.ui.screens.terminal.TerminalScreen
 import com.opencode.remote.ui.screens.activity.ActivityScreen
 import com.opencode.remote.ui.screens.git.GitScreen
 import com.opencode.remote.ui.screens.settings.SettingsScreen
+import com.opencode.remote.ui.screens.sessions.SessionsScreen
+import androidx.compose.material.icons.filled.History
 
 /** One tab = one route + its icon + its label. Replaces three hand-aligned parallel
  *  lists (labels/icons/routes) that had to stay index-synced on every change. */
@@ -38,6 +40,7 @@ private val DASHBOARD_TABS = listOf(
     DashboardTab(NavRoutes.Tab.Diff, "Diff", Icons.Default.Code),
     DashboardTab(NavRoutes.Tab.Terminal, "Terminal", Icons.Default.Terminal),
     DashboardTab(NavRoutes.Tab.Tasks, "Tasks", Icons.Default.List),
+    DashboardTab(NavRoutes.Tab.Sessions, "Sessions", Icons.Default.History),
     DashboardTab(NavRoutes.Tab.Git, "Git", Icons.Default.Code), // placeholder icon, no dedicated Git glyph in Material icons
     DashboardTab(NavRoutes.Tab.Settings, "Settings", Icons.Default.Settings),
 )
@@ -107,6 +110,9 @@ fun MainDashboardScreen(
                 }
                 composable(NavRoutes.Tab.Tasks.route) {
                     ActivityScreen(sessionManager = sessionManager)
+                }
+                composable(NavRoutes.Tab.Sessions.route) {
+                    SessionsScreen(sessionManager = sessionManager)
                 }
                 composable(NavRoutes.Tab.Git.route) {
                     GitScreen(sessionManager = sessionManager)

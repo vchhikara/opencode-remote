@@ -48,6 +48,8 @@ class SessionManagerTest {
         assertEquals(null, manager.streamingMessage.value)
         assertEquals(null, manager.pendingPermission.value)
         assertEquals(null, manager.pendingQuestion.value)
+        assertTrue(manager.sessions.value.isEmpty())
+        assertEquals(null, manager.activeSessionId.value)
         assertTrue(manager.tasks.value.isEmpty())
         assertEquals(null, manager.gitStatus.value)
     }
@@ -175,6 +177,19 @@ class SessionManagerTest {
 
         manager.replyQuestion("q1", "a")
         assertEquals(null, manager.pendingQuestion.value)
+    }
+
+    @Test
+    fun testSessionListAndSwitchedEvents() = testScope.runTest {
+        assertTrue(manager.sessions.value.isEmpty())
+        assertEquals(null, manager.activeSessionId.value)
+
+        val sessions = listOf(SessionDto("s1", "First"), SessionDto("s2", "Second"))
+        simulateIncomingMessage(createFrame("SESSION_LIST", sessions, json))
+        assertEquals(sessions, manager.sessions.value)
+
+        simulateIncomingMessage(createFrame("SESSION_SWITCHED", SessionSwitchedDto("s2"), json))
+        assertEquals("s2", manager.activeSessionId.value)
     }
 
     @Test

@@ -154,6 +154,20 @@ data class PermissionReplyPayload(val permissionId: String, val decision: String
 @Serializable
 data class QuestionReplyPayload(val questionId: String, val answer: String)
 
+/** Wire shape of the bridge's SESSION_LIST payload entries (main.js LIST_SESSIONS). */
+@Serializable
+data class SessionDto(val id: String, val title: String? = null, val updatedAt: Long? = null)
+
+/** Wire shape of the bridge's SESSION_SWITCHED payload (main.js NEW_SESSION /
+ *  SWITCH_SESSION). */
+@Serializable
+data class SessionSwitchedDto(val id: String)
+
+/** Outbound wire shape for RemoteSessionManager.newSession's NEW_SESSION frame
+ *  (main.js reads payload.title, optional). */
+@Serializable
+data class NewSessionPayload(val title: String? = null)
+
 /** Matches the bridge's GIT_STATUS payload exactly (main.js pushGitStatus). */
 @Serializable
 data class GitStatusDto(

@@ -32,6 +32,33 @@ let ocServeProc = null;
 let ocReadyPromise = null;
 let ocSessionId = null;
 
+// Session-id persistence across bridge restarts (Task 3.2). Stored as a small
+// JSON file inside the workspace, keyed by nothing else — one bridge process
+// serves one workspace at a time, so one file is enough. A bridge crash/
+// restart then resumes the same opencode session instead of silently
+// starting a fresh one.
+function sessionStateFilePath() {
+  return path.join(activeWorkspace, '.opencode-remote-session.json');
+}
+
+function persistSessionId() {
+  try {
+    fs.writeFileSync(sessionStateFilePath(), JSON.stringify({ sessionId: ocSessionId }));
+  } catch (e) {
+    console.log(`  ! failed to persist session id: ${e.message}`);
+  }
+}
+
+function loadPersistedSessionId() {
+  try {
+    const raw = fs.readFileSync(sessionStateFilePath(), 'utf-8');
+    const data = JSON.parse(raw);
+    return data.sessionId || null;
+  } catch {
+    return null;
+  }
+}
+
 function resolveInsideWorkspace(p) {
   const abs = path.resolve(activeWorkspace, p);
   const root = path.resolve(activeWorkspace);
@@ -147,7 +174,10 @@ function pushTaskRemoved(id) {
 // fresh session, same as switching directories used to do before).
 function startOpenCodeServer() {
   if (ocServeProc) { ocServeProc.kill(); ocServeProc = null; }
-  ocSessionId = null;
+  // Resume the last session used in this workspace (Task 3.2) instead of
+  // always starting null — ensureSession() will fall back to creating a new
+  // one if this id no longer exists server-side.
+  ocSessionId = loadPersistedSessionId();
 
   const proc = spawn(OPCODE, ['serve', '--port', String(OC_SERVE_PORT), '--hostname', '127.0.0.1'], {
     cwd: activeWorkspace,
@@ -302,11 +332,17 @@ async function startEventStream(emit) {
 }
 
 async function ensureSession() {
+  // Trusts a persisted/switched-to session id at face value — opencode's own
+  // session storage lives independently of any one `opencode serve` process,
+  // so an id from a prior bridge run is expected to still resolve. If it
+  // doesn't, the next prompt call surfaces that as a normal error (same path
+  // as any other opencode-server error), not a silent fallback.
   if (ocSessionId) return ocSessionId;
   const res = await ocFetch('/session', { method: 'POST', body: JSON.stringify({ title: 'OpenCode Remote' }) });
   if (!res.ok) throw new Error(`Could not create opencode session (${res.status})`);
   const session = await res.json();
   ocSessionId = session.id;
+  persistSessionId();
   return ocSessionId;
 }
 
@@ -535,6 +571,78 @@ wss.on('connection', (ws, req) => {
       case 'REJECT_DIFF': {
         const file = String(payload);
         delete pendingDiffs[file];
+        break;
+      }
+      case 'LIST_SESSIONS': {
+        (async () => {
+          try {
+            if (!ocServeProc) startOpenCodeServer();
+            await ocReadyPromise;
+            const res = await ocFetch('/session');
+            if (!res.ok) throw new Error(`list sessions returned ${res.status}`);
+            const sessions = await res.json();
+            ws.send(JSON.stringify({
+              eventType: 'SESSION_LIST',
+              payload: sessions.map(s => ({ id: s.id, title: s.title, updatedAt: s.time && s.time.updated }))
+            }));
+          } catch (e) {
+            ws.send(JSON.stringify({ eventType: 'ERROR', payload: { message: `LIST_SESSIONS failed: ${e.message}` } }));
+          }
+        })();
+        break;
+      }
+      case 'SWITCH_SESSION': {
+        const targetId = String(payload);
+        (async () => {
+          try {
+            if (!ocServeProc) startOpenCodeServer();
+            await ocReadyPromise;
+            const res = await ocFetch(`/session/${targetId}`);
+            if (!res.ok) throw new Error(`session not found (${res.status})`);
+            ocSessionId = targetId;
+            persistSessionId();
+            ws.send(JSON.stringify({ eventType: 'SESSION_SWITCHED', payload: { id: targetId } }));
+          } catch (e) {
+            ws.send(JSON.stringify({ eventType: 'ERROR', payload: { message: `SWITCH_SESSION failed: ${e.message}` } }));
+          }
+        })();
+        break;
+      }
+      case 'NEW_SESSION': {
+        const title = (payload && payload.title) || undefined;
+        (async () => {
+          try {
+            if (!ocServeProc) startOpenCodeServer();
+            await ocReadyPromise;
+            const res = await ocFetch('/session', { method: 'POST', body: JSON.stringify({ title: title || 'OpenCode Remote' }) });
+            if (!res.ok) throw new Error(`create session returned ${res.status}`);
+            const session = await res.json();
+            ocSessionId = session.id;
+            persistSessionId();
+            ws.send(JSON.stringify({ eventType: 'SESSION_SWITCHED', payload: { id: session.id } }));
+          } catch (e) {
+            ws.send(JSON.stringify({ eventType: 'ERROR', payload: { message: `NEW_SESSION failed: ${e.message}` } }));
+          }
+        })();
+        break;
+      }
+      case 'FORK_SESSION': {
+        // Confirmed endpoint (PROGRESS.md Phase 0): POST /session/{id}/fork
+        const sourceId = String(payload);
+        (async () => {
+          try {
+            if (!ocServeProc) startOpenCodeServer();
+            await ocReadyPromise;
+            const res = await ocFetch(`/session/${sourceId}/fork`, { method: 'POST' });
+            if (!res.ok) throw new Error(`fork returned ${res.status}`);
+            const forked = await res.json();
+            ocSessionId = forked.id;
+            persistSessionId();
+            ws.send(JSON.stringify({ eventType: 'SESSION_SWITCHED', payload: { id: forked.id } }));
+          } catch (e) {
+            ws.send(JSON.stringify({ eventType: 'ERROR', payload: { message: `FORK_SESSION failed: ${e.message}` } }));
+          }
+        })();
         break;
       }
       case 'PERMISSION_REPLY': {
