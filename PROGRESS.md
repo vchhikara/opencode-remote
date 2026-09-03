@@ -50,11 +50,11 @@ correct.
 | 4 | 4.2.1 Android streaming terminal output (append not replace) | Done | `grep -n "terminalOutput" ...` → single append-only consumer (`outputLines = outputLines + terminalOutput`) already present; no change needed | | 6b46790 |
 | 4 | 4.2.2 Android wire TERMINAL_RESIZE to real size changes | Done | `grep -n "TERMINAL_RESIZE" ...RemoteSessionManager.kt` shows `resizeTerminal()`; `gradlew :app:assembleDebug` → BUILD SUCCESSFUL | Wired to `onSizeChanged` on the terminal surface (approximate monospace cols/rows from pixel size) | 6b46790 |
 | 4 | Phase 4 merge gate (baseline rerun) | Done | `bridge npm test` → 26/26 pass; `gradlew :app:testDebugUnitTest` → BUILD SUCCESSFUL; `gradlew :app:assembleDebug` → BUILD SUCCESSFUL | Merged into remote-control-groundwork | 6b46790 |
-| 5 | 5.1.1 Android pendingDiffs list (not single value) | Not started | | | |
-| 5 | 5.1.2 Android UI renders all pending diffs | Not started | | | |
-| 5 | 5.2.1 Per-hunk accept/reject (conditional) | Not started | | | |
-| 5 | 5.3.1 Live diff preview (depends on Phase 1) | Not started | | | |
-| 5 | Phase 5 merge gate (baseline rerun) | Not started | | | |
+| 5 | 5.1.1 Android pendingDiffs list (not single value) | Done | `gradlew :app:testDebugUnitTest --tests "*SessionManagerTest*"` → BUILD SUCCESSFUL (new testMultipleFileDiffsAllAppearInPendingDiffsList, testFileDiffForSamePathReplacesEarlierEntry) | `pendingDiff` kept as a derived first-entry accessor, updated in lockstep (not via `.stateIn`, which leaked an uncompleted collector into test scope — fixed before landing) | e0c466e |
+| 5 | 5.1.2 Android UI renders all pending diffs | Done | `gradlew :app:assembleDebug` → BUILD SUCCESSFUL; `grep -rn "pendingDiff\b" app/src/main` shows only the documented derived accessor remaining | DiffReviewScreen renders a TabRow, one tab per pending diff | e0c466e |
+| 5 | 5.2.1 Per-hunk accept/reject (conditional) | Won't do (unsupported upstream) | `/doc` probe (Phase 0, 0.2.6): no per-hunk/partial-apply endpoint exists — only whole-file diff endpoints | ACCEPT_HUNK/REJECT_HUNK comment in bridge/main.js updated to cite this finding directly | e0c466e |
+| 5 | 5.3.1 Live diff preview (depends on Phase 1) | Done | `bridge npm test` → stream.test.js asserts a live FILE_DIFF frame from the completed edit-tool STREAM_TOOL_RESULT, before the final diff fetch | Live probe (real opencode serve, real file edit) confirmed a completed 'edit' tool's `state.metadata.filediff = {file, patch, additions, deletions}` | e0c466e |
+| 5 | Phase 5 merge gate (baseline rerun) | Done | `bridge npm test` → 26/26 pass; `gradlew :app:testDebugUnitTest` → BUILD SUCCESSFUL; `gradlew :app:assembleDebug` → BUILD SUCCESSFUL | Merged into remote-control-groundwork | e0c466e |
 | 6 | 6.1.1 Bridge multi-workspace tracking | Not started | | | |
 | 6 | 6.1.2 Bridge per-workspace session strategy decision | Not started | | | |
 | 6 | 6.2.1 Android meaningful WorkspaceListScreen | Not started | | | |
@@ -136,6 +136,18 @@ if ever needed.
   `patch`/`hunk` path anywhere in the OpenAPI doc. Phase 5 Task 5.2 must be scoped down
   to `Won't do (unsupported upstream)` per the plan's own conditional — confirmed via
   this probe, not silently dropped.
+- **Phase 4: `/pty` transport (0.2.5 follow-up, live-verified in Phase 4)**: live probe
+  against a real `opencode serve` confirmed `POST /pty {command,args}` creates a PTY;
+  I/O is a WebSocket at `GET /pty/{id}/connect` (not SSE/polling) — plain-text frames
+  are output, frames prefixed with a NUL byte carry out-of-band JSON control data (e.g.
+  `{"cursor":N}`) and must be filtered, not displayed. Resize is `PUT /pty/{id}` with
+  `{size:{rows,cols}}` (confirmed in the OpenAPI schema).
+- **Phase 5: completed edit-tool payload shape (live-verified in Phase 5)**: live probe
+  — created a real session, prompted a real file edit, captured the actual
+  `message.part.updated` event for the completed `edit` tool. `part.state.metadata`
+  carries `filediff: {file, patch, additions, deletions}` with a real unified diff in
+  `patch`, alongside `diagnostics: {}` and a separate `diff` string (the same patch,
+  unstructured). This is the payload Task 5.3.1's live diff preview reads.
 - **`/project` API**: confirmed present — `GET /project` (list), `GET /project/current`,
   `POST /project/git/init`, `GET /project/{projectID}`,
   `GET /project/{projectID}/directories`, plus experimental copy endpoints. This
