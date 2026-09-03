@@ -82,6 +82,42 @@ correct.
 - **Commit**: the git SHA (short form, e.g. `a1b2c3d`) of the commit that made this
   subtask's exit criterion pass, on the relevant `phase-N-*` branch.
 
+## Final summary (all phases merged to `main`)
+
+All 8 phases of `IMPLEMENTATION_PLAN.md` (implementing `remote-control-roadmap.md`)
+are complete and merged: `remote-control-groundwork` (which absorbed each
+`phase-N-*` branch via `git merge --no-ff` at its own merge gate) was itself
+merged `--no-ff` into `main`. Baseline rerun on `main` post-merge: bridge
+`npm test` 37/37 pass; `gradlew :app:testDebugUnitTest` and
+`gradlew :app:assembleDebug` both BUILD SUCCESSFUL (forced non-cached rerun).
+
+**What shipped**: a bridge process (`bridge/main.js`) that wraps a local
+`opencode serve` instance and exposes it over an authenticated WebSocket
+(`/ws`) to a native Android client (`opencode_remote_android_app/`), covering
+session lifecycle (list/switch/new/fork, persisted across bridge restarts),
+mid-task control (interrupt/steer/approve permission and question prompts,
+kill-task), a PTY-backed remote terminal, live multi-file diff review with
+diff-on-edit streaming, multi-workspace support, reachability/notification
+hooks and reconnect-on-resume, and Phase 8 security hardening — per-device
+token issuance/revocation and an append-only audit log of every executed git
+command, terminal command, and permission/question decision.
+
+**Known gaps, honestly recorded (not silently dropped)**:
+- **Task 5.2 (per-hunk accept/reject)** — `Won't do (unsupported upstream)`:
+  the live opencode serve OpenAPI doc has no per-hunk/partial-apply diff
+  endpoint, only whole-file diff endpoints (Phase 0 finding 0.2.6).
+- **Task 7.1.2 (Android FCM push handling)** — `Blocked`: no Firebase project
+  (`google-services.json`) and no physical/emulator device were available in
+  this environment. `notifyExternal()` on the bridge side broadcasts a NOTIFY
+  frame today (the seam a real FCM send would plug into); actual push
+  delivery to a real device is not implemented or claimed.
+- **Manual on-device UI verification** — every UI screen added across all 8
+  phases (permission/question cards, session picker, terminal, diff tabs,
+  workspace list, devices/revoke screen, audit log view, etc.) was verified
+  by unit test + a successful `assembleDebug` build, not by tapping through
+  it on a real device/emulator (none was connected in this environment).
+  This is flagged per-row above rather than claimed as fully done.
+
 ## Live-API findings (filled in during Phase 0, referenced by later phases)
 
 Captured against `opencode` CLI v1.18.26, `opencode serve --port 4097`. Full OpenAPI
