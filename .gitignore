@@ -36,3 +36,7 @@ __pycache__/
 # Stray Windows binary + local runtime data
 cmd.exe
 token-optimizer/
+
+# Local IDE project state and opencode CLI scratch dirs (per-machine, not source)
+/.idea/
+.opencode/
