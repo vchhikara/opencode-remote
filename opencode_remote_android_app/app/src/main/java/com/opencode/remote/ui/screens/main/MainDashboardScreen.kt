@@ -13,7 +13,10 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
@@ -55,6 +58,21 @@ fun MainDashboardScreen(
     val navController = rememberNavController()
     var selectedIndex by remember { mutableStateOf(0) }
     val pendingDiff by sessionManager.pendingDiff.collectAsState()
+
+    // Reconnect-on-resume (Task 7.2.1): a backgrounded app's socket can die
+    // silently (OS-killed connection, network change) without the app ever
+    // seeing a close event. Re-driving connect() on every ON_RESUME reuses
+    // WsClient's existing idempotency guard (a no-op if already connected)
+    // and its backoff loop (if actually disconnected), rather than adding a
+    // second reconnect mechanism.
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) sessionManager.connect()
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
 
     Scaffold(
         bottomBar = {
