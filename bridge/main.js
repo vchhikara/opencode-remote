@@ -190,6 +190,89 @@ async function ocFetch(pathname, opts = {}) {
   return res;
 }
 
+// --- Live streaming: relay opencode serve's /event SSE feed as WS frames ---
+// [VERIFY LIVE, confirmed in PROGRESS.md Phase 0] /event streams
+// text/event-stream with `message.part.delta` carrying incremental text and
+// `message.part.updated` carrying tool-part state transitions (part.type ===
+// 'tool', part.state.status in pending/running/completed/error).
+let ocEventStreamStarted = false;
+
+// Parses one SSE event ("data: {...}" line, possibly among other lines in the
+// same event block) and relays it as a WS frame via `emit`. Split out from the
+// stream-reading loop so tests can feed it canned SSE text directly instead of
+// standing up a real HTTP server.
+function relaySseEventBlock(rawBlock, emit) {
+  for (const line of rawBlock.split('\n')) {
+    if (!line.startsWith('data:')) continue;
+    const jsonStr = line.slice(5).trim();
+    if (!jsonStr) continue;
+    let evt;
+    try { evt = JSON.parse(jsonStr); } catch { continue; }
+    console.log(`  [sse] ${evt.type}`);
+    relaySseEvent(evt, emit);
+  }
+}
+
+function relaySseEvent(evt, emit) {
+  const props = evt.properties || {};
+  if (evt.type === 'message.part.delta') {
+    const part = props.part || {};
+    if (part.type === 'text' && typeof part.text === 'string') {
+      emit('STREAM_TEXT_DELTA', { sessionId: props.sessionID || part.sessionID, text: part.text });
+    }
+    return;
+  }
+  if (evt.type === 'message.part.updated') {
+    const part = props.part || {};
+    if (part.type === 'tool') {
+      const state = part.state || {};
+      const sessionId = props.sessionID || part.sessionID;
+      if (state.status === 'running' || state.status === 'pending') {
+        emit('STREAM_TOOL_CALL', { sessionId, tool: part.tool, input: state.input });
+      } else if (state.status === 'completed' || state.status === 'error') {
+        emit('STREAM_TOOL_RESULT', { sessionId, tool: part.tool, output: state.output || state.error });
+      }
+    }
+    return;
+  }
+  // Other event types (session.updated, session.idle, plugin.added, etc.) are
+  // not part of the streaming contract yet — intentionally not relayed.
+}
+
+// Opens the real /event SSE stream against the running opencode serve process
+// and relays parsed events via `emit`, reconnecting with a fixed delay if the
+// stream drops while opencode serve is still up. Not unit-tested directly
+// (would require a real HTTP server); relaySseEventBlock/relaySseEvent carry
+// the tested logic. Exit criterion for this function is the manual/live check
+// described in IMPLEMENTATION_PLAN.md Task 1.1.1.
+async function startEventStream(emit) {
+  if (ocEventStreamStarted) return;
+  ocEventStreamStarted = true;
+  for (;;) {
+    try {
+      const res = await fetch(`${ocBaseUrl}/event`, { headers: { Accept: 'text/event-stream' } });
+      if (!res.ok || !res.body) throw new Error(`event stream returned ${res.status}`);
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buf = '';
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
+        let idx;
+        while ((idx = buf.indexOf('\n\n')) !== -1) {
+          relaySseEventBlock(buf.slice(0, idx), emit);
+          buf = buf.slice(idx + 2);
+        }
+      }
+    } catch (e) {
+      console.log(`  ! event stream error: ${e.message}`);
+    }
+    if (!ocServeProc) { ocEventStreamStarted = false; return; }
+    await new Promise(r => setTimeout(r, 2000));
+  }
+}
+
 async function ensureSession() {
   if (ocSessionId) return ocSessionId;
   const res = await ocFetch('/session', { method: 'POST', body: JSON.stringify({ title: 'OpenCode Remote' }) });
@@ -209,6 +292,7 @@ async function runPrompt(prompt) {
   try {
     if (!ocServeProc) startOpenCodeServer();
     await ocReadyPromise;
+    startEventStream(broadcast); // idempotent; no-op if already streaming
     const sessionId = await ensureSession();
     task.sessionId = sessionId;
 

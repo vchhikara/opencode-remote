@@ -8,14 +8,17 @@ const WebSocket = require('ws');
 const BRIDGE_ENTRY = path.join(__dirname, '..', 'main.js');
 
 // Starts the bridge as a child process on `port` with a known token and
-// workspace root. Returns the child process; caller must kill it.
-function startBridge(port, token, workspaceRoot) {
+// workspace root. `extraEnv` merges in additional env vars (e.g. OPCODE,
+// OC_SERVE_PORT to point the bridge's opencode-server integration at a test
+// fixture instead of the real CLI). Returns the child process; caller must
+// kill it.
+function startBridge(port, token, workspaceRoot, extraEnv = {}) {
   // `activeWorkspace` in main.js defaults to `process.cwd()` (it only moves
   // on an OPEN_WORKSPACE command), so the child's cwd must be workspaceRoot
   // itself, not just the WORKSPACE_ROOT confinement env var.
   const child = spawn(process.execPath, [BRIDGE_ENTRY, String(port)], {
     cwd: workspaceRoot,
-    env: { ...process.env, BRIDGE_TOKEN: token, WORKSPACE_ROOT: workspaceRoot, PORT: String(port) }
+    env: { ...process.env, BRIDGE_TOKEN: token, WORKSPACE_ROOT: workspaceRoot, PORT: String(port), ...extraEnv }
   });
   return child;
 }
