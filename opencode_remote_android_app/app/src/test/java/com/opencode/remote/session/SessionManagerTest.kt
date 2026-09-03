@@ -71,6 +71,20 @@ class SessionManagerTest {
     }
 
     @Test
+    fun testMultiItemWorkspaceListIsFullyReflected() = testScope.runTest {
+        // Task 6.2.1: WorkspaceListScreen must render every entry the bridge
+        // sends, not assume a single-item list.
+        val workspaces = listOf(
+            WorkspaceDto("w1", "W1", "/w1"),
+            WorkspaceDto("w2", "W2", "/w2"),
+            WorkspaceDto("w3", "W3", "/w3")
+        )
+        simulateIncomingMessage(createFrame("WORKSPACE_LIST", workspaces, json))
+        assertEquals(3, manager.workspaces.value.size)
+        assertEquals(workspaces, manager.workspaces.value)
+    }
+
+    @Test
     fun testChatMessageIsMappedFromBridgeShape() = testScope.runTest {
         // Bridge's field names (text/isUser) differ from the UI's (content/role) on
         // purpose — this is exactly the mapping that used to fail silently.
