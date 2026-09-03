@@ -25,16 +25,23 @@ test('PROMPT relays the fake opencode /event SSE feed as STREAM_* frames', async
   ws.send(JSON.stringify({ eventType: 'PROMPT', payload: 'say hi' }));
 
   const seen = { STREAM_TEXT_DELTA: false, STREAM_TOOL_CALL: false, STREAM_TOOL_RESULT: false };
+  let liveFileDiff = null;
   for (let i = 0; i < 40; i++) {
     const msg = await nextMessageOrTimeoutSafe(ws, 1000);
     if (!msg) continue;
     if (msg.eventType in seen) seen[msg.eventType] = true;
-    if (seen.STREAM_TEXT_DELTA && seen.STREAM_TOOL_CALL && seen.STREAM_TOOL_RESULT) break;
+    if (msg.eventType === 'FILE_DIFF' && !liveFileDiff) liveFileDiff = msg.payload;
+    if (seen.STREAM_TEXT_DELTA && seen.STREAM_TOOL_CALL && seen.STREAM_TOOL_RESULT && liveFileDiff) break;
   }
 
   assert.strictEqual(seen.STREAM_TEXT_DELTA, true, 'expected a STREAM_TEXT_DELTA frame');
   assert.strictEqual(seen.STREAM_TOOL_CALL, true, 'expected a STREAM_TOOL_CALL frame');
   assert.strictEqual(seen.STREAM_TOOL_RESULT, true, 'expected a STREAM_TOOL_RESULT frame');
+  // Task 5.3.1: a completed edit-tool STREAM_TOOL_RESULT must push a live
+  // FILE_DIFF, not just the final post-prompt diff fetch.
+  assert.ok(liveFileDiff, 'expected a live FILE_DIFF frame pushed from the completed edit-tool event');
+  assert.strictEqual(liveFileDiff.fileName, '/tmp/fake.txt');
+  assert.ok(liveFileDiff.diffText.includes('+new'));
 
   ws.close();
   await stopBridge(child);

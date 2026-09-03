@@ -9,15 +9,22 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Code
 import androidx.compose.material3.*
+import androidx.compose.material3.Tab
+import androidx.compose.material3.TabRow
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.opencode.remote.data.dto.FileDiffDto
 import com.opencode.remote.data.network.RemoteSessionManager
 
 enum class DiffLineType {
@@ -66,9 +73,13 @@ fun parseDiff(patch: String?): ParsedDiff {
 
 @Composable
 fun DiffReviewScreen(sessionManager: RemoteSessionManager) {
-    val pendingDiff by sessionManager.pendingDiff.collectAsState()
+    // Renders every pending diff from the bridge (Task 5.1.2), not just the
+    // last-received one — a tab per changed file, with the review UI below
+    // acting on whichever tab is selected.
+    val pendingDiffs by sessionManager.pendingDiffs.collectAsState()
+    var selectedPath by rememberSaveable { mutableStateOf<String?>(null) }
 
-    if (pendingDiff == null) {
+    if (pendingDiffs.isEmpty()) {
         Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                 Icon(
@@ -91,10 +102,22 @@ fun DiffReviewScreen(sessionManager: RemoteSessionManager) {
             }
         }
     } else {
-        val diff = pendingDiff!!
+        val diff: FileDiffDto = pendingDiffs.firstOrNull { it.filePath == selectedPath } ?: pendingDiffs.first()
         val parsedDiff = parseDiff(diff.patch)
 
         Column(modifier = Modifier.fillMaxSize()) {
+            if (pendingDiffs.size > 1) {
+                val selectedIndex = pendingDiffs.indexOf(diff).coerceAtLeast(0)
+                TabRow(selectedTabIndex = selectedIndex) {
+                    pendingDiffs.forEach { d ->
+                        Tab(
+                            selected = d.filePath == diff.filePath,
+                            onClick = { selectedPath = d.filePath },
+                            text = { Text(d.filePath.substringAfterLast('/'), maxLines = 1) }
+                        )
+                    }
+                }
+            }
             // Header
             Row(
                 modifier = Modifier

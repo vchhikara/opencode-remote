@@ -66,8 +66,25 @@ class RemoteSessionManager(
     private val _fileContent = MutableStateFlow<FileContentDto?>(null)
     val fileContent: StateFlow<FileContentDto?> = _fileContent.asStateFlow()
 
+    // Every file with a pending (unreviewed) diff, keyed by filePath — a
+    // single FILE_DIFF frame per changed file, so more than one can be
+    // outstanding at once (Task 5.1; previously a single value that silently
+    // dropped all but the last-received diff).
+    private val _pendingDiffs = MutableStateFlow<List<FileDiffDto>>(emptyList())
+    val pendingDiffs: StateFlow<List<FileDiffDto>> = _pendingDiffs.asStateFlow()
+
+    /** Convenience accessor for screens that only ever show one diff at a
+     *  time (e.g. a "first outstanding diff" summary badge) — intentionally
+     *  kept alongside [pendingDiffs] rather than migrating every call site.
+     *  Updated in lockstep with [_pendingDiffs] rather than derived via a
+     *  live collector, so it needs no coroutine of its own. */
     private val _pendingDiff = MutableStateFlow<FileDiffDto?>(null)
     val pendingDiff: StateFlow<FileDiffDto?> = _pendingDiff.asStateFlow()
+
+    private fun setPendingDiffs(update: (List<FileDiffDto>) -> List<FileDiffDto>) {
+        _pendingDiffs.update(update)
+        _pendingDiff.value = _pendingDiffs.value.firstOrNull()
+    }
 
     // In-progress assistant turn, built up from STREAM_TEXT_DELTA/STREAM_TOOL_CALL/
     // STREAM_TOOL_RESULT frames. Null when no generation is in flight. Cleared when
@@ -176,7 +193,8 @@ class RemoteSessionManager(
                     _fileContent.value = FileContentDto(path = pendingFileRequestPath ?: "", content = content)
                 }
                 "FILE_DIFF" -> frame.decodePayload<BridgeFileDiffDto>(json)?.let { diff ->
-                    _pendingDiff.value = FileDiffDto(filePath = diff.fileName, patch = diff.diffText)
+                    val entry = FileDiffDto(filePath = diff.fileName, patch = diff.diffText)
+                    setPendingDiffs { list -> list.filterNot { it.filePath == entry.filePath } + entry }
                 }
                 "TERMINAL_OUTPUT" -> frame.decodePayload<String>(json)?.let { _terminalOutput.emit(it) }
                 "TASK_UPDATED" -> frame.decodePayload<TaskDto>(json)?.let { task ->
@@ -229,12 +247,12 @@ class RemoteSessionManager(
 
     fun acceptDiff(filePath: String) {
         sendString("ACCEPT_DIFF", filePath)
-        if (_pendingDiff.value?.filePath == filePath) _pendingDiff.value = null
+        setPendingDiffs { list -> list.filterNot { it.filePath == filePath } }
     }
 
     fun rejectDiff(filePath: String) {
         sendString("REJECT_DIFF", filePath)
-        if (_pendingDiff.value?.filePath == filePath) _pendingDiff.value = null
+        setPendingDiffs { list -> list.filterNot { it.filePath == filePath } }
     }
 
     /** decision: bridge forwards this string verbatim as {decision} to
