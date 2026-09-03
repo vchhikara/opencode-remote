@@ -12,10 +12,13 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import com.opencode.remote.data.network.RemoteSessionManager
 import kotlinx.coroutines.launch
+import kotlin.math.max
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -25,6 +28,15 @@ fun TerminalScreen(sessionManager: RemoteSessionManager) {
     var command by remember { mutableStateOf("") }
     val listState = rememberLazyListState()
     val coroutineScope = rememberCoroutineScope()
+    val density = LocalDensity.current
+    // Approximate monospace char cell size at the bodySmall font size used
+    // below, to derive a cols/rows grid from the actual rendered surface
+    // size (Task 4.2.2 — TERMINAL_RESIZE must be tied to a real layout/size
+    // callback, not a dead helper). A 0.6x width / 1.3x line-height ratio is
+    // the standard monospace approximation; exact glyph metrics aren't worth
+    // the complexity here since resize only needs to be roughly right.
+    var lastSentCols by remember { mutableStateOf(-1) }
+    var lastSentRows by remember { mutableStateOf(-1) }
 
     LaunchedEffect(terminalOutput) {
         if (terminalOutput.isNotEmpty()) {
@@ -57,7 +69,19 @@ fun TerminalScreen(sessionManager: RemoteSessionManager) {
             Surface(
                 modifier = Modifier
                     .weight(1f)
-                    .fillMaxWidth(),
+                    .fillMaxWidth()
+                    .onSizeChanged { sizePx ->
+                        val widthDp = with(density) { sizePx.width.toDp().value }
+                        val heightDp = with(density) { sizePx.height.toDp().value }
+                        val fontSizeSp = 12f // matches MaterialTheme.typography.bodySmall used below
+                        val cols = max(1, (widthDp / (fontSizeSp * 0.6f)).toInt())
+                        val rows = max(1, (heightDp / (fontSizeSp * 1.3f)).toInt())
+                        if (cols != lastSentCols || rows != lastSentRows) {
+                            lastSentCols = cols
+                            lastSentRows = rows
+                            sessionManager.resizeTerminal(cols, rows)
+                        }
+                    },
                 color = Color.Black
             ) {
                 LazyColumn(

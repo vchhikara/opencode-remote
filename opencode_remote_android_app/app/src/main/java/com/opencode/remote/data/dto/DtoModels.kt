@@ -168,6 +168,12 @@ data class SessionSwitchedDto(val id: String)
 @Serializable
 data class NewSessionPayload(val title: String? = null)
 
+/** Outbound wire shape for RemoteSessionManager.resizeTerminal's TERMINAL_RESIZE
+ *  frame (main.js reads payload.cols/payload.rows, resizes the active PTY —
+ *  Task 4.2.2). */
+@Serializable
+data class TerminalResizePayload(val cols: Int, val rows: Int)
+
 /** Matches the bridge's GIT_STATUS payload exactly (main.js pushGitStatus). */
 @Serializable
 data class GitStatusDto(

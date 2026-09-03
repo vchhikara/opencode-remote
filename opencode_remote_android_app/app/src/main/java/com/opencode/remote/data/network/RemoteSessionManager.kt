@@ -261,6 +261,13 @@ class RemoteSessionManager(
 
     fun runTerminal(command: String) = sendString("TERMINAL", command)
 
+    /** Resizes the active PTY-backed terminal (Task 4.2.2) — call this from a
+     *  real layout/size-change callback (see TerminalScreen's onSizeChanged),
+     *  not on a timer or as dead code. */
+    fun resizeTerminal(cols: Int, rows: Int) {
+        sendRaw("TERMINAL_RESIZE", json.encodeToJsonElement(TerminalResizePayload(cols, rows)))
+    }
+
     fun killTask(taskId: String) = sendString("KILL_TASK", taskId)
 
     fun runGit(command: String) = sendString("GIT", command)
