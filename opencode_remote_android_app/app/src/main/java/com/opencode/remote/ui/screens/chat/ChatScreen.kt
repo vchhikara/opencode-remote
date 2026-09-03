@@ -25,13 +25,16 @@ fun ChatScreen(
 ) {
     val chatMessages by sessionManager.chatMessages.collectAsState()
     val agentState by sessionManager.agentState.collectAsState()
+    val streamingMessage by sessionManager.streamingMessage.collectAsState()
     val listState = rememberLazyListState()
 
     var inputText by remember { mutableStateOf("") }
 
-    LaunchedEffect(chatMessages.size) {
-        if (chatMessages.isNotEmpty()) {
-            listState.animateScrollToItem(chatMessages.size - 1)
+    // +1 for the streaming bubble, which isn't in chatMessages until the turn finishes.
+    val itemCount = chatMessages.size + if (streamingMessage != null) 1 else 0
+    LaunchedEffect(itemCount) {
+        if (itemCount > 0) {
+            listState.animateScrollToItem(itemCount - 1)
         }
     }
 
@@ -104,6 +107,55 @@ fun ChatScreen(
                             else MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
+                }
+            }
+
+            if (streamingMessage != null) {
+                item(key = "streaming") {
+                    StreamingBubble(streamingMessage!!)
+                }
+            }
+        }
+    }
+}
+
+/** Renders the in-progress assistant turn: accumulated streamed text, and which tool
+ *  (if any) is currently running — replaces the old static "Thinking..." placeholder
+ *  once any streamed content has arrived. */
+@Composable
+private fun StreamingBubble(streaming: com.opencode.remote.data.dto.StreamingMessageDto) {
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 4.dp),
+        contentAlignment = Alignment.CenterStart
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth(0.8f)
+                .clip(RoundedCornerShape(12.dp))
+                .background(MaterialTheme.colorScheme.surfaceVariant)
+                .padding(12.dp)
+        ) {
+            Column {
+                if (streaming.text.isNotEmpty()) {
+                    Text(
+                        text = streaming.text,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                val tool = streaming.runningTool
+                if (tool != null) {
+                    Text(
+                        text = "Running `$tool`...",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        style = MaterialTheme.typography.labelMedium
+                    )
+                } else if (streaming.text.isEmpty()) {
+                    Text(
+                        text = "Thinking...",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
                 }
             }
         }

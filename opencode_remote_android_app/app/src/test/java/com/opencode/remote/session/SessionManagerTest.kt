@@ -45,6 +45,7 @@ class SessionManagerTest {
         assertTrue(manager.fileTree.value.isEmpty())
         assertEquals(null, manager.fileContent.value)
         assertEquals(null, manager.pendingDiff.value)
+        assertEquals(null, manager.streamingMessage.value)
         assertTrue(manager.tasks.value.isEmpty())
         assertEquals(null, manager.gitStatus.value)
     }
@@ -124,6 +125,32 @@ class SessionManagerTest {
         // TASK_REMOVED is a bare id string, not an object.
         simulateIncomingMessage(createFrame("TASK_REMOVED", "t1", json))
         assertTrue(manager.tasks.value.isEmpty())
+    }
+
+    @Test
+    fun testStreamTextDeltaAccumulatesIntoStreamingMessage() = testScope.runTest {
+        assertEquals(null, manager.streamingMessage.value)
+        simulateIncomingMessage(createFrame("STREAM_TEXT_DELTA", StreamTextDeltaDto(text = "Hel"), json))
+        simulateIncomingMessage(createFrame("STREAM_TEXT_DELTA", StreamTextDeltaDto(text = "lo"), json))
+        assertEquals("Hello", manager.streamingMessage.value?.text)
+    }
+
+    @Test
+    fun testStreamToolCallAndResultTrackRunningTool() = testScope.runTest {
+        simulateIncomingMessage(createFrame("STREAM_TOOL_CALL", StreamToolCallDto(tool = "bash"), json))
+        assertEquals("bash", manager.streamingMessage.value?.runningTool)
+
+        simulateIncomingMessage(createFrame("STREAM_TOOL_RESULT", StreamToolResultDto(tool = "bash"), json))
+        assertEquals(null, manager.streamingMessage.value?.runningTool)
+    }
+
+    @Test
+    fun testStreamingMessageClearedWhenFinalChatMessageArrives() = testScope.runTest {
+        simulateIncomingMessage(createFrame("STREAM_TEXT_DELTA", StreamTextDeltaDto(text = "partial"), json))
+        assertEquals("partial", manager.streamingMessage.value?.text)
+
+        simulateIncomingMessage(createFrame("CHAT_MESSAGE", BridgeChatMessageDto(id = "m1", text = "final"), json))
+        assertEquals(null, manager.streamingMessage.value)
     }
 
     @Test
