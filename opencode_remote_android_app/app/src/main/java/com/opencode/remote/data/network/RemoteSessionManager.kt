@@ -238,6 +238,11 @@ class RemoteSessionManager(
 
     fun fetchWorkspaces() = sendRaw("FETCH_WORKSPACES")
 
+    /** Registers a directory in the bridge's workspace list without
+     *  switching to it (Task 6.2.1) — the bridge replies with an updated
+     *  WORKSPACE_LIST, which [workspaces] already reflects. */
+    fun addWorkspace(path: String) = sendString("ADD_WORKSPACE", path)
+
     fun fetchFileTree() = sendRaw("FETCH_FILE_TREE")
 
     fun fetchFile(path: String) {

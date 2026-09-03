@@ -5,6 +5,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -22,9 +23,36 @@ fun WorkspaceListScreen(
     onDisconnect: () -> Unit
 ) {
     val workspaces by sessionManager.workspaces.collectAsState()
+    var showAddDialog by remember { mutableStateOf(false) }
+    var newPath by remember { mutableStateOf("") }
 
     LaunchedEffect(Unit) {
         sessionManager.fetchWorkspaces()
+    }
+
+    if (showAddDialog) {
+        AlertDialog(
+            onDismissRequest = { showAddDialog = false },
+            title = { Text("Add workspace") },
+            text = {
+                OutlinedTextField(
+                    value = newPath,
+                    onValueChange = { newPath = it },
+                    placeholder = { Text("/path/to/project") },
+                    singleLine = true
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    if (newPath.isNotBlank()) sessionManager.addWorkspace(newPath.trim())
+                    newPath = ""
+                    showAddDialog = false
+                }) { Text("Add") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showAddDialog = false }) { Text("Cancel") }
+            }
+        )
     }
 
     Scaffold(
@@ -32,6 +60,9 @@ fun WorkspaceListScreen(
             TopAppBar(
                 title = { Text("Workspaces") },
                 actions = {
+                    IconButton(onClick = { showAddDialog = true }) {
+                        Icon(Icons.Default.Add, contentDescription = "Add workspace")
+                    }
                     Button(onClick = {
                         sessionManager.disconnect()
                         onDisconnect()
