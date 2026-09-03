@@ -26,6 +26,8 @@ fun ChatScreen(
     val chatMessages by sessionManager.chatMessages.collectAsState()
     val agentState by sessionManager.agentState.collectAsState()
     val streamingMessage by sessionManager.streamingMessage.collectAsState()
+    val pendingPermission by sessionManager.pendingPermission.collectAsState()
+    val pendingQuestion by sessionManager.pendingQuestion.collectAsState()
     val listState = rememberLazyListState()
 
     var inputText by remember { mutableStateOf("") }
@@ -48,30 +50,44 @@ fun ChatScreen(
             )
         },
         bottomBar = {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(16.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                TextField(
-                    value = inputText,
-                    onValueChange = { inputText = it },
-                    modifier = Modifier.weight(1f),
-                    placeholder = { Text("Ask the agent...") },
-                    maxLines = 4
-                )
-                Spacer(modifier = Modifier.width(8.dp))
-                IconButton(
-                    onClick = {
-                        if (inputText.isNotBlank()) {
-                            sessionManager.sendPrompt(inputText)
-                            inputText = ""
-                        }
-                    },
-                    enabled = inputText.isNotBlank()
+            Column {
+                pendingPermission?.let { req ->
+                    PermissionRequestCard(
+                        request = req,
+                        onDecision = { decision -> sessionManager.replyPermission(req.permissionId, decision) }
+                    )
+                }
+                pendingQuestion?.let { req ->
+                    QuestionRequestCard(
+                        request = req,
+                        onAnswer = { answer -> sessionManager.replyQuestion(req.questionId, answer) }
+                    )
+                }
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(16.dp),
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Icon(Icons.Default.Send, contentDescription = "Send")
+                    TextField(
+                        value = inputText,
+                        onValueChange = { inputText = it },
+                        modifier = Modifier.weight(1f),
+                        placeholder = { Text("Ask the agent...") },
+                        maxLines = 4
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    IconButton(
+                        onClick = {
+                            if (inputText.isNotBlank()) {
+                                sessionManager.sendPrompt(inputText)
+                                inputText = ""
+                            }
+                        },
+                        enabled = inputText.isNotBlank()
+                    ) {
+                        Icon(Icons.Default.Send, contentDescription = "Send")
+                    }
                 }
             }
         }
@@ -113,6 +129,56 @@ fun ChatScreen(
             if (streamingMessage != null) {
                 item(key = "streaming") {
                     StreamingBubble(streamingMessage!!)
+                }
+            }
+        }
+    }
+}
+
+/** Non-blocking card shown above the input row when the agent wants to run a tool
+ *  that needs approval. Doesn't cover the rest of the screen — the chat list and
+ *  other tabs stay usable while this is up. */
+@Composable
+private fun PermissionRequestCard(
+    request: com.opencode.remote.data.dto.PermissionRequestDto,
+    onDecision: (String) -> Unit
+) {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 4.dp)
+    ) {
+        Column(modifier = Modifier.padding(12.dp)) {
+            Text("Agent wants to run `${request.tool ?: "a tool"}`", style = MaterialTheme.typography.bodyMedium)
+            Row(modifier = Modifier.padding(top = 8.dp)) {
+                TextButton(onClick = { onDecision("allow") }) { Text("Allow once") }
+                TextButton(onClick = { onDecision("always") }) { Text("Always") }
+                TextButton(onClick = { onDecision("deny") }) { Text("Deny") }
+            }
+        }
+    }
+}
+
+/** Non-blocking card shown above the input row when the agent asks a clarifying
+ *  question mid-task. */
+@Composable
+private fun QuestionRequestCard(
+    request: com.opencode.remote.data.dto.QuestionRequestDto,
+    onAnswer: (String) -> Unit
+) {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 4.dp)
+    ) {
+        Column(modifier = Modifier.padding(12.dp)) {
+            Text(request.text ?: "The agent has a question", style = MaterialTheme.typography.bodyMedium)
+            val options = request.options
+            if (options != null) {
+                Row(modifier = Modifier.padding(top = 8.dp)) {
+                    for (option in options) {
+                        TextButton(onClick = { onAnswer(option) }) { Text(option) }
+                    }
                 }
             }
         }

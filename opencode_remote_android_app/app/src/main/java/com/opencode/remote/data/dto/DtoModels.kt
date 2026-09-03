@@ -127,6 +127,33 @@ data class StreamingMessageDto(
     val runningTool: String? = null
 )
 
+/** Wire shape of the bridge's PERMISSION_REQUEST payload (main.js relaySseEvent). */
+@Serializable
+data class PermissionRequestDto(
+    val permissionId: String,
+    val sessionId: String? = null,
+    val tool: String? = null
+)
+
+/** Wire shape of the bridge's QUESTION_REQUEST payload (main.js relaySseEvent). */
+@Serializable
+data class QuestionRequestDto(
+    val questionId: String,
+    val sessionId: String? = null,
+    val text: String? = null,
+    val options: List<String>? = null
+)
+
+/** Outbound wire shape for RemoteSessionManager.replyPermission's PERMISSION_REPLY
+ *  frame (main.js reads payload.permissionId/payload.decision). */
+@Serializable
+data class PermissionReplyPayload(val permissionId: String, val decision: String)
+
+/** Outbound wire shape for RemoteSessionManager.replyQuestion's QUESTION_REPLY frame
+ *  (main.js reads payload.questionId/payload.answer). */
+@Serializable
+data class QuestionReplyPayload(val questionId: String, val answer: String)
+
 /** Matches the bridge's GIT_STATUS payload exactly (main.js pushGitStatus). */
 @Serializable
 data class GitStatusDto(

@@ -90,6 +90,30 @@ test('QUESTION_REPLY calls POST /question/{id}/reply on the opencode server', as
   await stopBridge(child);
 });
 
+test('two back-to-back PROMPTs for the same session both complete (2.3.1 mid-task steering)', async () => {
+  // [VERIFY LIVE finding, PROGRESS.md]: a live opencode serve probe firing two
+  // concurrent POST /session/{id}/message calls showed both return HTTP 200 and
+  // complete (queued server-side, not rejected). The bridge's PROMPT handler has
+  // no guard preventing a second PROMPT while one is in flight, so this already
+  // works without a code change — this test proves it stays that way.
+  const { child, port, token } = await startWithFakeOpencode();
+  const { ws } = await connectAndAuth(port, token);
+
+  ws.send(JSON.stringify({ eventType: 'PROMPT', payload: 'first' }));
+  ws.send(JSON.stringify({ eventType: 'PROMPT', payload: 'second' }));
+
+  let chatMessageCount = 0;
+  for (let i = 0; i < 60 && chatMessageCount < 2; i++) {
+    const msg = await nextMessageOrTimeoutSafe(ws, 1000);
+    if (msg && msg.eventType === 'CHAT_MESSAGE') chatMessageCount++;
+  }
+
+  assert.strictEqual(chatMessageCount, 2, 'expected two CHAT_MESSAGE frames, one per PROMPT');
+
+  ws.close();
+  await stopBridge(child);
+});
+
 test('KILL_TASK pushes a Cancelled chat message', async () => {
   const { child, port, ocPort, token } = await startWithFakeOpencode();
   const { ws } = await connectAndAuth(port, token);
