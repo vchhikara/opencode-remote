@@ -14,17 +14,54 @@ const port = portIdx !== -1 ? parseInt(args[portIdx + 1], 10) : 4096;
 
 let sessionCounter = 0;
 
-// Canned /event stream: one text delta, then a tool call (running) followed
-// by its result (completed) — matches the real message.part.delta /
-// message.part.updated(part.type==='tool') shapes recorded in PROGRESS.md.
+// Records every inbound request this fixture receives, readable via
+// GET /__requests, so tests can assert the bridge called the expected
+// upstream endpoint (e.g. PERMISSION_REPLY -> POST /permission/{id}/reply)
+// without needing to intercept global.fetch.
+const requestLog = [];
+
+// Canned /event stream: one text delta, a tool call (running) followed by its
+// result (completed), then a permission-asked event — matches the real
+// message.part.delta / message.part.updated(part.type==='tool') /
+// permission.asked shapes recorded in PROGRESS.md.
 const CANNED_EVENTS = [
   { type: 'message.part.delta', properties: { sessionID: 'ses_fake_1', part: { type: 'text', text: 'Hello from fake', sessionID: 'ses_fake_1' } } },
   { type: 'message.part.updated', properties: { sessionID: 'ses_fake_1', part: { type: 'tool', tool: 'bash', state: { status: 'running', input: { command: 'ls' } } } } },
-  { type: 'message.part.updated', properties: { sessionID: 'ses_fake_1', part: { type: 'tool', tool: 'bash', state: { status: 'completed', input: { command: 'ls' }, output: 'file1\nfile2' } } } }
+  { type: 'message.part.updated', properties: { sessionID: 'ses_fake_1', part: { type: 'tool', tool: 'bash', state: { status: 'completed', input: { command: 'ls' }, output: 'file1\nfile2' } } } },
+  { type: 'permission.asked', properties: { id: 'per_fake_1', sessionID: 'ses_fake_1', permission: 'bash', patterns: [], metadata: {}, always: [] } },
+  { type: 'question.asked', properties: { id: 'que_fake_1', sessionID: 'ses_fake_1', text: 'Which approach?', options: ['a', 'b'] } }
 ];
 
 const server = http.createServer((req, res) => {
   const url = req.url || '';
+
+  if (req.method === 'GET' && url === '/__requests') {
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify(requestLog));
+    return;
+  }
+
+  // GET /event is a long-lived SSE connection — never buffer its body (it has
+  // none, and req.on('end') on some Node versions doesn't fire promptly for a
+  // connection the server itself intends to hold open for writing).
+  if (req.method === 'GET' && url === '/event') {
+    dispatch(req, res, url);
+    return;
+  }
+
+  // Record every other request (method, path, and JSON body if any) before
+  // dispatching.
+  let rawBody = '';
+  req.on('data', d => { rawBody += d; });
+  req.on('end', () => {
+    let body = null;
+    try { body = rawBody ? JSON.parse(rawBody) : null; } catch { body = rawBody; }
+    requestLog.push({ method: req.method, url, body });
+    dispatch(req, res, url);
+  });
+});
+
+function dispatch(req, res, url) {
   if (req.method === 'GET' && url === '/config') {
     res.writeHead(200, { 'content-type': 'application/json' });
     res.end('{}');
@@ -62,9 +99,19 @@ const server = http.createServer((req, res) => {
     req.on('close', () => clearInterval(timer));
     return;
   }
+  if (req.method === 'POST' && /^\/permission\/[^/]+\/reply$/.test(url)) {
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end('{}');
+    return;
+  }
+  if (req.method === 'POST' && /^\/question\/[^/]+\/(reply|reject)$/.test(url)) {
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end('{}');
+    return;
+  }
   res.writeHead(404, { 'content-type': 'application/json' });
   res.end('{}');
-});
+}
 
 server.listen(port, '127.0.0.1');
 
