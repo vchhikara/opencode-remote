@@ -1,18 +1,15 @@
+# Dotfolders — local/machine-specific state, not source.
+# .git, .github, and .docs (project documentation) are the only
+# dotfolders that should ever be tracked.
+.*/
+!.github/
+!.docs/
+
 *.iml
-.gradle
-.kotlin
 /local.properties
-/.idea/caches
-/.idea/libraries
-/.idea/modules.xml
-/.idea/workspace.xml
-/.idea/navEditor.xml
-/.idea/assetWizardSettings.xml
 .DS_Store
 /build
 /captures
-.externalNativeBuild
-.cxx
 local.properties
 .env
 debug.keystore
@@ -36,10 +33,6 @@ __pycache__/
 # Stray Windows binary + local runtime data
 cmd.exe
 token-optimizer/
-
-# Local IDE project state and opencode CLI scratch dirs (per-machine, not source)
-/.idea/
-.opencode/
 
 # Bridge runtime state (session persistence, audit log, device tokens) -
 # generated at runtime by bridge/main.js, not source

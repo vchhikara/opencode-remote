@@ -1,5 +1,10 @@
 # Progress Ledger
 
+> Note: the Android client directory has since been renamed from
+> `opencode_remote_android_app/` to `android-application/`. Historical rows
+> below refer to it by its old name at the time each command was run —
+> left unchanged as an accurate record, not stale.
+
 **HARD REQUIREMENT: update this file immediately after finishing (or abandoning) every
 single subtask** — not at the end of a session, not at the end of a phase. This file,
 not conversation memory, is the sole resumable state for this plan. Anyone (human or

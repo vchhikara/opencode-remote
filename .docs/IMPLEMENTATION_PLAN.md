@@ -1,5 +1,10 @@
 # Implementation Plan — Remote Control Roadmap
 
+> Note: the Android client directory has since been renamed from
+> `opencode_remote_android_app/` to `android-application/`. References below
+> use the old name as it was at the time this plan was written — left
+> unchanged as an accurate record, not stale.
+
 Ground truth: `remote-control-roadmap.md` (8 sections), `bridge/main.js` (current
 bridge), `opencode_remote_android_app/` (Android client). This plan turns those 8
 sections into deterministic, checkable, resumable work.
