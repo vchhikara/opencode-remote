@@ -57,7 +57,7 @@ cd android-application
 ./gradlew :app:assembleDebug       # build the debug APK
 ```
 
-Both commands are verified to print `BUILD SUCCESSFUL` in this project's own merge gates (see [`.docs/PROGRESS.md`](.docs/PROGRESS.md)). Open the `android-application/` directory in Android Studio to run on a device or emulator, or install the assembled APK from `app/build/outputs/apk/debug/`.
+Both commands are verified to print `BUILD SUCCESSFUL` in this project's own merge gates. Open the `android-application/` directory in Android Studio to run on a device or emulator, or install the assembled APK from `app/build/outputs/apk/debug/`.
 
 ## Pairing a device
 
@@ -72,7 +72,7 @@ See [`bridge/API.md`](bridge/API.md) for the full WebSocket protocol and [ADR 00
 
 Chat with live token streaming, mid-task control (interrupt, steer, approve permission/question prompts, kill a running task), session management (list/switch/new/fork, persisted across bridge restarts), a real PTY-backed terminal, multi-file diff review with diff-on-edit streaming, multi-workspace support, reconnect-on-resume, and per-device token security with an append-only audit log. All of it is implemented and covered by the bridge's `node --test` suite and Android's unit tests plus `assembleDebug`/`testDebugUnitTest` builds.
 
-Known, honestly-tracked gaps: per-hunk (as opposed to whole-file) diff accept/reject isn't possible, `opencode serve` has no such endpoint upstream. Android push notifications via FCM are not implemented (no Firebase project configured). See [`.docs/PROGRESS.md`](.docs/PROGRESS.md) for the full, row-by-row ledger of what's been built and verified, including exactly which UI screens have and haven't been manually tapped through on a physical device.
+Known, honestly-tracked gaps: per-hunk (as opposed to whole-file) diff accept/reject isn't possible, `opencode serve` has no such endpoint upstream. Android push notifications via FCM are not implemented (no Firebase project configured).
 
 ## Repository layout
 
@@ -82,7 +82,6 @@ bridge/               Node.js WebSocket bridge (main.js) and its tests
   README.md            LAN-escape setup (Tailscale, Cloudflare Tunnel)
 android-application/   Kotlin/Compose Android client (package com.opencode.remote)
 adr/                   architecture decision records
-.docs/                 project documentation: plans, progress ledger, reports
 tools/
 ```
 
@@ -90,9 +89,6 @@ tools/
 
 For anyone wanting more depth than this README:
 
-- [`.docs/PROGRESS.md`](.docs/PROGRESS.md), the ledger of what's actually been built and verified, phase by phase, including the literal command run to verify each item. Read this first for current project state.
-- [`.docs/IMPLEMENTATION_PLAN.md`](.docs/IMPLEMENTATION_PLAN.md), the detailed phased plan `PROGRESS.md` tracks against.
-- [`.docs/remote-control-roadmap.md`](.docs/remote-control-roadmap.md), the original feature roadmap that `IMPLEMENTATION_PLAN.md` was derived from.
 - [`bridge/API.md`](bridge/API.md), the full bridge WebSocket protocol: every inbound/outbound frame type, payload shape, and behavior.
 - [`adr/`](adr/), architecture decision records (e.g. why per-device tokens instead of one shared token).
 - [`CONTRIBUTING.md`](CONTRIBUTING.md), how to build, test, and verify changes before proposing them.

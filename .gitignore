@@ -1,9 +1,9 @@
 # Dotfolders — local/machine-specific state, not source.
-# .git, .github, and .docs (project documentation) are the only
-# dotfolders that should ever be tracked.
+# .git and .github are the only dotfolders that should ever be tracked.
+# .docs/ (here and under android-application/) holds internal working
+# notes/plans and is intentionally local-only, like every other dotfolder.
 .*/
 !.github/
-!.docs/
 
 *.iml
 /local.properties
