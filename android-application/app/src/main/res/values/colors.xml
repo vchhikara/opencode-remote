@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Launcher icon background. White, matching the icon artwork itself
+         (a black laptop/</> glyph on white) rather than the in-app Compose
+         theme colors in ui/theme/Color.kt, which are unrelated to this. -->
+    <color name="ic_launcher_background">#FFFFFF</color>
+</resources>
