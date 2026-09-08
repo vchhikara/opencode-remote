@@ -1,4 +1,4 @@
-OpenCode Remote
+# OpenCode Remote
 
 <p align="center">
   <strong>A native Android remote control for OpenCode.</strong><br/>
