@@ -13,8 +13,8 @@ android {
     applicationId = "com.opencode.remote"
     minSdk = 24
     targetSdk = 36
-    versionCode = 1
-    versionName = "1.0"
+    versionCode = 7
+    versionName = "0.7.0"
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
   }
@@ -100,6 +100,9 @@ dependencies {
   // Security (EncryptedSharedPreferences)
   implementation(libs.androidx.security.crypto)
 
+  // Settings persistence (Jetpack DataStore)
+  implementation(libs.androidx.datastore.preferences)
+
   // Camera & Barcode QR Scanner
   implementation(libs.androidx.camera.core)
   implementation(libs.androidx.camera.camera2)
@@ -114,6 +117,7 @@ dependencies {
   // Testing
   testImplementation(libs.junit)
   testImplementation(libs.kotlinx.coroutines.test)
+  testImplementation(libs.turbine)
   androidTestImplementation(libs.androidx.junit)
   androidTestImplementation(libs.androidx.espresso.core)
   androidTestImplementation(platform(libs.androidx.compose.bom))

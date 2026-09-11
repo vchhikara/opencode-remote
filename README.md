@@ -1,6 +1,10 @@
 # OpenCode Remote
 
 <p align="center">
+  <img src="docs/banner.png" alt="OpenCode Remote — your dev environment, in your pocket" width="100%">
+</p>
+
+<p align="center">
   <strong>A native Android remote control for OpenCode.</strong><br/>
   Run the agent on your development machine. Control it from your phone.
 </p>
@@ -10,6 +14,7 @@
   <img src="https://img.shields.io/badge/Kotlin-Jetpack%20Compose-7F52FF?logo=kotlin&logoColor=white" alt="Kotlin + Jetpack Compose">
   <img src="https://img.shields.io/badge/Bridge-Node.js%2018%2B-5FA04E?logo=nodedotjs&logoColor=white" alt="Node.js 18+">
   <img src="https://img.shields.io/badge/OpenCode-Remote-111111" alt="OpenCode Remote">
+  <img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="MIT License">
 </p>
 
 **OpenCode Remote** is a self-hosted Android client for [OpenCode](https://opencode.ai).
@@ -575,7 +580,7 @@ It does not provide privilege escalation.
 Example:
 
 ```bash
-WORKSPACE_ROOT=/home/vipul/projects \
+WORKSPACE_ROOT=/home/user/projects \
 PORT=8080 \
 npm start
 ```
@@ -786,3 +791,9 @@ Check a long-running refactor while away from your desk.
 Open a terminal when something actually needs intervention.
 
 **The development environment stays on the development machine. The control surface goes with you.**
+
+---
+
+## License
+
+MIT — see [LICENSE.md](LICENSE.md).

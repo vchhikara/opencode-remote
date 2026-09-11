@@ -31,3 +31,50 @@ jobs:
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
       - run: ./gradlew :app:testDebugUnitTest assembleDebug
+
+  android-release-compliance:
+    name: Android release build & Play Store compliance
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: android-application
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: "temurin"
+          java-version: "17"
+      - name: Grant execute permission for gradlew
+        run: chmod +x gradlew
+      - name: Build release AAB and merged manifest
+        run: ./gradlew :app:bundleRelease :app:processReleaseMainManifest
+      - name: Play Store compliance audit (targetSdk, permissions, telemetry SDKs)
+        run: |
+          python3 scripts/audit_play_compliance.py \
+            app/build/intermediates/merged_manifest/release/processReleaseMainManifest/AndroidManifest.xml \
+            app/build.gradle.kts
+      - name: Native .so stripping audit
+        run: |
+          chmod +x scripts/verify_so_stripped.sh
+          ./scripts/verify_so_stripped.sh app/build/outputs/bundle/release/app-release.aab
+
+  dependency-cve-scan:
+    name: OWASP dependency-check (CVE scan)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: OWASP Dependency-Check
+        uses: dependency-check/Dependency-Check_Action@main
+        with:
+          project: opencode-remote
+          path: "."
+          format: "HTML"
+          args: >
+            --enableExperimental
+            --failOnCVSS 7
+      - name: Upload dependency-check report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dependency-check-report
+          path: reports/

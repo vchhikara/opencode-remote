@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Launch window only: Compose draws everything after setContent. The background
+         matches the redesign's dark app surface (the app-bg token) so there is no flash of the
+         platform's grey Material background before the first frame. -->
+    <style name="Theme.OpenCodeRemote" parent="@android:style/Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/oc_app_bg</item>
+    </style>
+</resources>

@@ -45,3 +45,11 @@ bridge/.device-tokens.json
 # testing, and manual-verification screenshots (not project deliverables)
 /welcome.md
 /phase8_verify/
+
+# Handoff/redesign working files (deliverables already merged into
+# android-application/ source; these are source zips/transcripts, not
+# project deliverables themselves)
+*.zip
+/OpenCode Remote - Redesign.dc.html
+android-application/handoff-1.md
+android-application/Claude_RT_app_transcript_reconstructed.md

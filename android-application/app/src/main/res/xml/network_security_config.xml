@@ -1,15 +1,12 @@
 <?xml version="1.0" encoding="utf-8"?>
 <network-security-config>
-    <!-- By default, disallow cleartext traffic -->
+    <!-- Cleartext (ws://, not wss://) is permitted globally by design: this
+    app connects only to a user-configured bridge host/port (LAN IP,
+    Tailscale address, or tunnel hostname — see README "Transport Security"),
+    never to arbitrary internet hosts, and Android's Network Security Config
+    has no way to scope cleartext permission to "any private/LAN IP" (no
+    CIDR support, only exact-domain/IP or subdomain-suffix matching). Users
+    wanting transport encryption should connect via Tailscale or a tunnel,
+    as documented in the README, rather than relying on this config. -->
     <base-config cleartextTrafficPermitted="true" />
-
-    <!-- Permit cleartext HTTP / WS traffic ONLY to local and LAN subnets -->
-    <domain-config cleartextTrafficPermitted="true">
-        <domain includeSubdomains="true">localhost</domain>
-        <domain includeSubdomains="true">127.0.0.1</domain>
-        <domain includeSubdomains="true">10.0.2.2</domain>
-        <domain includeSubdomains="true">10.in-addr.arpa</domain>
-        <domain includeSubdomains="true">168.192.in-addr.arpa</domain>
-        <domain includeSubdomains="true">192.168.31.223</domain>
-    </domain-config>
 </network-security-config>

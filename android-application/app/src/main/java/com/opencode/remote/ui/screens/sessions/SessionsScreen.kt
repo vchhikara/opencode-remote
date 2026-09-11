@@ -1,69 +1,73 @@
 package com.opencode.remote.ui.screens.sessions
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.Check
-import androidx.compose.material.icons.filled.Chat
-import androidx.compose.material.icons.filled.CallSplit
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.opencode.remote.data.dto.SessionDto
 import com.opencode.remote.data.network.RemoteSessionManager
+import com.opencode.remote.ui.components.CodeText
+import com.opencode.remote.ui.components.EmptyNote
+import com.opencode.remote.ui.components.Eyebrow
+import com.opencode.remote.ui.components.HeaderAction
+import com.opencode.remote.ui.components.ScreenHeader
+import com.opencode.remote.ui.components.bottomRule
+import com.opencode.remote.ui.components.startRule
+import com.opencode.remote.ui.state.Formatting
+import com.opencode.remote.ui.theme.Oc
+import com.opencode.remote.ui.theme.OcType
 
-/** Lists opencode sessions known to the bridge's workspace, lets the user resume any
- *  of them or start a fresh one — replaces the previous implicit single-session model
- *  (one session, created lazily, never listed) with real visibility and management
- *  (roadmap §3). */
-@OptIn(ExperimentalMaterial3Api::class)
+/** opencode sessions from SESSION_LIST: switch, fork, or start a new one. */
 @Composable
-fun SessionsScreen(sessionManager: RemoteSessionManager) {
-    val sessions by sessionManager.sessions.collectAsState()
-    val activeSessionId by sessionManager.activeSessionId.collectAsState()
+fun SessionsScreen(sessionManager: RemoteSessionManager, onOpened: () -> Unit) {
+    val sessions by sessionManager.sessions.collectAsStateWithLifecycle()
+    val activeId by sessionManager.activeSessionId.collectAsStateWithLifecycle()
 
-    LaunchedEffect(Unit) {
-        sessionManager.listSessions()
-    }
+    LaunchedEffect(Unit) { sessionManager.listSessions() }
 
-    Scaffold(
-        topBar = {
-            TopAppBar(
-                title = { Text("Sessions") },
-                actions = {
-                    IconButton(onClick = { sessionManager.newSession() }) {
-                        Icon(Icons.Default.Add, contentDescription = "New session")
-                    }
-                }
-            )
+    Column(Modifier.fillMaxSize()) {
+        ScreenHeader("Sessions") {
+            HeaderAction("New", onClick = {
+                sessionManager.newSession()
+                onOpened()
+            })
         }
-    ) { paddingValues ->
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(paddingValues)
-        ) {
-            if (sessions.isEmpty()) {
-                Text(
-                    text = "No sessions yet — start one with the + button",
-                    modifier = Modifier.align(Alignment.Center),
-                    style = MaterialTheme.typography.bodyLarge
-                )
-            } else {
-                LazyColumn(modifier = Modifier.fillMaxSize()) {
-                    items(sessions, key = { it.id }) { session ->
-                        SessionItem(
-                            session = session,
-                            isActive = session.id == activeSessionId,
-                            onClick = { sessionManager.switchSession(session.id) },
-                            onFork = { sessionManager.forkSession(session.id) }
-                        )
-                    }
+        if (sessions.isEmpty()) {
+            EmptyNote("No sessions yet", "Start one with New — the bridge lists every session in this workspace here.")
+        } else {
+            val now = System.currentTimeMillis()
+            // Most recently updated first when the bridge reports times; otherwise its order.
+            val unique = sessions.distinctBy { it.id }
+            val ordered = if (unique.any { it.updatedAt != null }) unique.sortedByDescending { it.updatedAt ?: Long.MIN_VALUE } else unique
+            LazyColumn(Modifier.fillMaxSize()) {
+                items(ordered, key = { it.id }) { session ->
+                    SessionRow(
+                        session = session,
+                        active = session.id == activeId,
+                        now = now,
+                        onOpen = {
+                            sessionManager.switchSession(session.id)
+                            onOpened()
+                        },
+                        onFork = { sessionManager.forkSession(session.id) }
+                    )
                 }
             }
         }
@@ -71,31 +75,35 @@ fun SessionsScreen(sessionManager: RemoteSessionManager) {
 }
 
 @Composable
-private fun SessionItem(session: SessionDto, isActive: Boolean, onClick: () -> Unit, onFork: () -> Unit) {
-    Card(
-        modifier = Modifier
+private fun SessionRow(session: SessionDto, active: Boolean, now: Long, onOpen: () -> Unit, onFork: () -> Unit) {
+    val c = Oc.colors
+    Column(
+        Modifier
             .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 8.dp)
-            .clickable { onClick() }
+            .then(if (active) Modifier.background(c.goldWash).startRule(c.gold, 2.dp) else Modifier)
+            .bottomRule(c.rule)
+            .clickable(onClick = onOpen)
+            .padding(horizontal = 18.dp, vertical = 16.dp)
     ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(16.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Icon(imageVector = Icons.Default.Chat, contentDescription = null, modifier = Modifier.size(32.dp))
-            Spacer(modifier = Modifier.width(16.dp))
-            Column(modifier = Modifier.weight(1f)) {
-                Text(text = session.title ?: session.id, style = MaterialTheme.typography.titleMedium)
-                Text(text = session.id, style = MaterialTheme.typography.bodySmall)
-            }
-            IconButton(onClick = onFork) {
-                Icon(imageVector = Icons.Default.CallSplit, contentDescription = "Fork session")
-            }
-            if (isActive) {
-                Icon(imageVector = Icons.Default.Check, contentDescription = "Active session")
-            }
+        Row(verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            Text(
+                session.title?.takeIf { it.isNotBlank() } ?: "Untitled session",
+                style = OcType.rowTitle, color = c.ink, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f)
+            )
+            session.updatedAt?.let { Eyebrow(Formatting.compactAge(Formatting.normalizeEpoch(it), now), style = OcType.tag) }
+        }
+        Spacer(Modifier.height(6.dp))
+        CodeText(session.id, color = c.ink2, style = OcType.monoSmall)
+        Spacer(Modifier.height(10.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(16.dp), verticalAlignment = Alignment.CenterVertically) {
+            if (active) Eyebrow("Active", style = OcType.tag, color = c.goldInk)
+            Text(
+                "Fork",
+                style = OcType.chip,
+                color = c.ink,
+                modifier = Modifier.clickable(onClick = onFork).padding(vertical = 4.dp)
+            )
         }
     }
 }

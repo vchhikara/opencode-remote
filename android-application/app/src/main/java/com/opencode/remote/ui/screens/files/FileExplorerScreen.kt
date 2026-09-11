@@ -1,112 +1,95 @@
 package com.opencode.remote.ui.screens.files
 
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Folder
-import androidx.compose.material.icons.filled.InsertDriveFile
-import androidx.compose.material.icons.filled.Refresh
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import com.opencode.remote.data.dto.FileNodeDto
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.opencode.remote.data.network.RemoteSessionManager
+import com.opencode.remote.ui.components.EmptyNote
+import com.opencode.remote.ui.components.HeaderAction
+import com.opencode.remote.ui.components.ScreenHeader
+import com.opencode.remote.ui.components.bottomRule
+import com.opencode.remote.ui.theme.Oc
+import com.opencode.remote.ui.theme.OcType
 
-@OptIn(ExperimentalMaterial3Api::class)
+/**
+ * Compact hierarchical view of the bridge's FILE_TREE. Opening a file goes through the
+ * existing fetchFile() → FILE_CONTENT pathway and the existing FileViewer route; the
+ * host filesystem is never touched from Android directly.
+ */
 @Composable
-fun FileExplorerScreen(
-    sessionManager: RemoteSessionManager,
-    onFileSelected: () -> Unit
-) {
-    val fileTree by sessionManager.fileTree.collectAsState()
+fun FileExplorerScreen(sessionManager: RemoteSessionManager, onFileSelected: () -> Unit) {
+    val c = Oc.colors
+    val tree by sessionManager.fileTree.collectAsStateWithLifecycle()
+    val git by sessionManager.gitStatus.collectAsStateWithLifecycle()
+    var expanded by rememberSaveable { mutableStateOf(listOf<String>()) }
+    val rows = remember(tree, expanded, git) { flattenTree(tree, expanded.toSet(), git) }
 
-    Scaffold(
-        topBar = {
-            TopAppBar(
-                title = { Text("Files") },
-                actions = {
-                    IconButton(onClick = { sessionManager.fetchFileTree() }) {
-                        Icon(Icons.Default.Refresh, contentDescription = "Refresh")
-                    }
-                }
-            )
-        }
-    ) { paddingValues ->
-        if (fileTree.isEmpty()) {
-            Box(
-                modifier = Modifier.fillMaxSize().padding(paddingValues),
-                contentAlignment = Alignment.Center
-            ) {
-                Text("No files found in workspace")
-            }
-        } else {
-            LazyColumn(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(paddingValues)
-            ) {
-                items(fileTree, key = { it.path }) { node ->
-                    FileNodeItem(
-                        node = node,
-                        level = 0,
-                        sessionManager = sessionManager,
-                        onFileSelected = onFileSelected
-                    )
-                }
-            }
-        }
+    LaunchedEffect(Unit) {
+        if (tree.isEmpty()) sessionManager.fetchFileTree()
     }
-}
 
-@Composable
-fun FileNodeItem(
-    node: FileNodeDto,
-    level: Int,
-    sessionManager: RemoteSessionManager,
-    onFileSelected: () -> Unit
-) {
-    var expanded by remember { mutableStateOf(false) }
-
-    Column {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .clickable {
-                    if (node.isDirectory) {
-                        expanded = !expanded
-                    } else {
-                        sessionManager.fetchFile(node.path)
-                        onFileSelected()
+    Column(Modifier.fillMaxSize()) {
+        ScreenHeader("Files") {
+            HeaderAction("Refresh", onClick = { sessionManager.fetchFileTree() })
+        }
+        if (rows.isEmpty()) {
+            EmptyNote("No files yet", "The tree arrives from the bridge once a workspace is open. Refresh to ask again.")
+        } else {
+            LazyColumn(Modifier.fillMaxSize()) {
+                items(rows) { row ->
+                    val node = row.node
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .bottomRule(c.rule)
+                            .clickable {
+                                if (node.isDirectory) {
+                                    expanded = if (node.path in expanded) expanded - node.path else expanded + node.path
+                                } else {
+                                    sessionManager.fetchFile(node.path)
+                                    onFileSelected()
+                                }
+                            }
+                            .padding(start = (18 + row.depth * 18).dp, end = 18.dp, top = 11.dp, bottom = 11.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        if (node.isDirectory) {
+                            Text(if (row.expanded) "▾" else "▸", style = OcType.bodySmall, color = c.ink3)
+                            Text(node.name, style = OcType.dirName, color = c.ink, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        } else {
+                            val marker = row.marker
+                            Text(
+                                node.name,
+                                style = OcType.mono.copy(lineHeight = OcType.dirName.lineHeight),
+                                color = if (marker != null) c.goldInk else c.ink,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.weight(1f, fill = false)
+                            )
+                            if (marker != null) Text("·  ${marker.label}", style = OcType.monoSmall, color = c.goldInk, maxLines = 1)
+                        }
                     }
                 }
-                .padding(start = (level * 16 + 16).dp, top = 8.dp, bottom = 8.dp, end = 16.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Icon(
-                imageVector = if (node.isDirectory) Icons.Default.Folder else Icons.Default.InsertDriveFile,
-                contentDescription = null,
-                modifier = Modifier.size(24.dp),
-                tint = if (node.isDirectory) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
-            )
-            Spacer(modifier = Modifier.width(16.dp))
-            Text(
-                text = node.name,
-                style = MaterialTheme.typography.bodyMedium
-            )
-        }
-
-        if (expanded && node.isDirectory && node.children != null) {
-            node.children.forEach { child ->
-                FileNodeItem(
-                    node = child,
-                    level = level + 1,
-                    sessionManager = sessionManager,
-                    onFileSelected = onFileSelected
-                )
             }
         }
     }

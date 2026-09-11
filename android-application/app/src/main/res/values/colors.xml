@@ -4,4 +4,6 @@
          (a black laptop/</> glyph on white) rather than the in-app Compose
          theme colors in ui/theme/Color.kt, which are unrelated to this. -->
     <color name="ic_launcher_background">#FFFFFF</color>
+    <!-- Launch window background; mirrors DarkOcColors.bg in ui/theme/Color.kt. -->
+    <color name="oc_app_bg">#101214</color>
 </resources>

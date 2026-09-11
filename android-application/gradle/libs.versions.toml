@@ -31,6 +31,7 @@ playServicesLocation = "21.3.0"
 firebaseBom = "34.18.0"
 composeUnstyled = "2.5.0"
 junit = "4.13.2"
+turbine = "1.1.0"
 androidxJunit = "1.2.1"
 espresso = "3.6.1"
 testRunner = "1.6.2"
@@ -103,6 +104,7 @@ composeunstyled-button = { group = "com.composables", name = "composeunstyled-bu
 composeunstyled-text-field = { group = "com.composables", name = "composeunstyled-text-field", version.ref = "composeUnstyled" }
 composeunstyled-toggle-switch = { group = "com.composables", name = "composeunstyled-toggle-switch", version.ref = "composeUnstyled" }
 junit = { group = "junit", name = "junit", version.ref = "junit" }
+turbine = { group = "app.cash.turbine", name = "turbine", version.ref = "turbine" }
 robolectric = { group = "org.robolectric", name = "robolectric", version.ref = "robolectric" }
 roborazzi = { group = "io.github.takahirom.roborazzi", name = "roborazzi", version.ref = "roborazzi" }
 roborazzi-compose = { group = "io.github.takahirom.roborazzi", name = "roborazzi-compose", version.ref = "roborazzi" }
