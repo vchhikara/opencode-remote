@@ -1,160 +1,161 @@
 package com.opencode.remote.ui.screens.settings
 
-import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import com.opencode.remote.data.dto.AuditLogEntryDto
-import com.opencode.remote.data.dto.DeviceDto
+import androidx.compose.ui.window.Dialog
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.opencode.remote.data.network.ConnectionState
 import com.opencode.remote.data.network.RemoteSessionManager
 import com.opencode.remote.data.storage.TokenStorage
+import com.opencode.remote.ui.components.Eyebrow
+import com.opencode.remote.ui.components.OcButton
+import com.opencode.remote.ui.components.OcButtonKind
+import com.opencode.remote.ui.components.ScreenHeader
+import com.opencode.remote.ui.components.bottomRule
+import com.opencode.remote.ui.theme.Appearance
+import com.opencode.remote.ui.theme.Oc
+import com.opencode.remote.ui.theme.OcType
 
-@OptIn(ExperimentalMaterial3Api::class)
+/**
+ * Connection info straight from TokenStorage and the live socket, appearance, paired
+ * devices, disconnect, and the destructive forget flow (TokenStorage.clear() →
+ * disconnect → back to pairing), exactly as before.
+ */
 @Composable
 fun SettingsScreen(
     sessionManager: RemoteSessionManager,
     tokenStorage: TokenStorage,
+    appearance: Appearance,
+    onAppearanceChange: (Appearance) -> Unit,
+    onOpenDevices: () -> Unit,
     onDisconnect: () -> Unit
 ) {
-    val activeWorkspace by sessionManager.activeWorkspace.collectAsState()
-    val devices by sessionManager.devices.collectAsState()
-    val auditLog by sessionManager.auditLog.collectAsState()
-    val credentials = tokenStorage.getLastCredentials()
-    var showForgetDialog by remember { mutableStateOf(false) }
-    var showAuditLog by remember { mutableStateOf(false) }
+    val c = Oc.colors
+    val credentials = remember { tokenStorage.getLastCredentials() }
+    val connection by sessionManager.connectionState.collectAsStateWithLifecycle()
+    val workspace by sessionManager.activeWorkspace.collectAsStateWithLifecycle()
+    val deviceId by sessionManager.currentDeviceId.collectAsStateWithLifecycle()
+    var confirmForget by rememberSaveable { mutableStateOf(false) }
 
-    LaunchedEffect(Unit) {
-        sessionManager.listDevices()
-    }
+    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
+        ScreenHeader("Settings")
 
-    Scaffold(
-        topBar = {
-            TopAppBar(title = { Text("Settings") })
+        Column(Modifier.fillMaxWidth().bottomRule(c.rule).padding(18.dp)) {
+            Eyebrow("Bridge")
+            Spacer(Modifier.height(10.dp))
+            val lines = listOfNotNull(
+                credentials?.let { "${it.host}:${it.port}" } ?: "No saved bridge",
+                connectionLabel(connection),
+                credentials?.deviceName?.let { name -> deviceId?.let { "$name · $it" } ?: name },
+                workspace
+            )
+            Text(lines.joinToString("\n"), style = OcType.mono.copy(lineHeight = OcType.mono.fontSize * 1.8f), color = c.ink)
         }
-    ) { padding ->
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(padding)
-                .padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp)
+
+        Row(
+            Modifier.fillMaxWidth().bottomRule(c.rule).padding(18.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            Text("Connection Info", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-            
-            Card(modifier = Modifier.fillMaxWidth()) {
-                Column(modifier = Modifier.padding(16.dp)) {
-                    Text("Host: ${credentials?.host ?: "Unknown"}")
-                    Text("Port: ${credentials?.port ?: "Unknown"}")
-                    Text("Device Name: ${credentials?.deviceName ?: "Unknown"}")
-                    Spacer(modifier = Modifier.height(8.dp))
-                    Text("Active Workspace:", fontWeight = FontWeight.Bold)
-                    Text(activeWorkspace ?: "None selected")
+            Text("Appearance", style = OcType.rowStrong, color = c.ink, modifier = Modifier.weight(1f))
+            Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+                Appearance.entries.forEach { option ->
+                    val selected = option == appearance
+                    Eyebrow(
+                        option.name,
+                        style = if (selected) OcType.tag.copy(fontWeight = FontWeight.SemiBold) else OcType.tag,
+                        color = if (selected) c.goldInk else c.ink2,
+                        modifier = Modifier
+                            .clickable(role = Role.RadioButton) { onAppearanceChange(option) }
+                            .padding(vertical = 6.dp)
+                    )
                 }
             }
+        }
 
-            Text("Paired Devices", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-            if (devices.isEmpty()) {
-                Text("No paired devices found.")
-            } else {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    devices.forEach { device -> DeviceRow(device, onRevoke = { sessionManager.revokeToken(device.deviceId) }) }
-                }
-            }
-
-            TextButton(onClick = {
-                showAuditLog = !showAuditLog
-                if (showAuditLog) sessionManager.fetchAuditLog()
-            }) {
-                Text(if (showAuditLog) "Hide Audit Log" else "Show Audit Log")
-            }
-            if (showAuditLog) {
-                if (auditLog.isEmpty()) {
-                    Text("No audit log entries yet.")
-                } else {
-                    LazyColumn(modifier = Modifier.heightIn(max = 240.dp)) {
-                        items(auditLog.asReversed()) { entry -> AuditLogRow(entry) }
-                    }
-                }
-            }
-
-            Spacer(modifier = Modifier.weight(1f))
-
-            Button(
+        Column(Modifier.fillMaxWidth().padding(18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            OcButton("Paired devices", onOpenDevices, modifier = Modifier.fillMaxWidth(), height = 46.dp, textStyle = OcType.buttonLarge)
+            OcButton(
+                "Disconnect",
                 onClick = {
                     sessionManager.disconnect()
                     onDisconnect()
                 },
-                modifier = Modifier.fillMaxWidth(),
-                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary)
-            ) {
-                Text("Disconnect")
-            }
-
-            Button(
-                onClick = { showForgetDialog = true },
-                modifier = Modifier.fillMaxWidth(),
-                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
-            ) {
-                Text("Forget Credentials")
-            }
+                modifier = Modifier.fillMaxWidth(), height = 46.dp, textStyle = OcType.buttonLarge
+            )
+            OcButton(
+                "Forget this bridge",
+                onClick = { confirmForget = true },
+                kind = OcButtonKind.Destructive,
+                modifier = Modifier.fillMaxWidth(), height = 46.dp, textStyle = OcType.buttonLargeStrong
+            )
         }
     }
 
-    if (showForgetDialog) {
-        AlertDialog(
-            onDismissRequest = { showForgetDialog = false },
-            title = { Text("Forget Credentials?") },
-            text = { Text("Are you sure you want to clear your saved credentials? You will need to enter them again to connect.") },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        tokenStorage.clear()
-                        showForgetDialog = false
-                        sessionManager.disconnect()
-                        onDisconnect()
-                    },
-                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
-                ) {
-                    Text("Forget")
+    if (confirmForget) {
+        Dialog(onDismissRequest = { confirmForget = false }) {
+            Column(
+                Modifier
+                    .fillMaxWidth()
+                    .background(c.panel)
+                    .border(1.dp, c.ruleStrong)
+                    .padding(20.dp)
+            ) {
+                Eyebrow("Forget this bridge", color = c.negInk)
+                Spacer(Modifier.height(12.dp))
+                Text("Erase the saved credentials?", style = OcType.statusTitle, color = c.ink)
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    "The host, token and device name stored on this phone are deleted. You'll need to pair again to reconnect.",
+                    style = OcType.body, color = c.ink2
+                )
+                Spacer(Modifier.height(20.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    OcButton("Cancel", { confirmForget = false }, modifier = Modifier.weight(1f))
+                    OcButton(
+                        "Forget",
+                        onClick = {
+                            tokenStorage.clear()
+                            confirmForget = false
+                            sessionManager.disconnect()
+                            onDisconnect()
+                        },
+                        kind = OcButtonKind.Destructive,
+                        modifier = Modifier.weight(1f)
+                    )
                 }
-            },
-            dismissButton = {
-                TextButton(onClick = { showForgetDialog = false }) {
-                    Text("Cancel")
-                }
-            }
-        )
-    }
-}
-
-@Composable
-private fun DeviceRow(device: DeviceDto, onRevoke: () -> Unit) {
-    Card(modifier = Modifier.fillMaxWidth()) {
-        Row(
-            modifier = Modifier.padding(16.dp).fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Column {
-                Text(device.deviceName, fontWeight = FontWeight.Bold)
-                Text("Device ID: ${device.deviceId}", style = MaterialTheme.typography.bodySmall)
-            }
-            TextButton(onClick = onRevoke) {
-                Text("Revoke", color = MaterialTheme.colorScheme.error)
             }
         }
     }
 }
 
-@Composable
-private fun AuditLogRow(entry: AuditLogEntryDto) {
-    Column(modifier = Modifier.padding(vertical = 4.dp)) {
-        Text("${entry.timestamp} · ${entry.kind}", style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Bold)
-        Text("by ${entry.deviceName ?: "unknown"} — ${entry.detail?.toString() ?: ""}", style = MaterialTheme.typography.bodySmall)
-    }
+private fun connectionLabel(state: ConnectionState): String = when (state) {
+    ConnectionState.Connected -> "Connected"
+    ConnectionState.Connecting -> "Connecting…"
+    is ConnectionState.Reconnecting -> "Reconnecting · attempt ${state.attempt}"
+    is ConnectionState.Error -> "Connection lost · ${state.message}"
+    ConnectionState.Disconnected -> "Disconnected"
 }

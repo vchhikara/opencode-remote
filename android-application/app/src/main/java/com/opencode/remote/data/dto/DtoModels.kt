@@ -46,7 +46,21 @@ data class ChatMessageDto(
     val id: String = UUID.randomUUID().toString(),
     val role: ChatRole,
     val content: String,
-    val timestamp: Long = System.currentTimeMillis()
+    val timestamp: Long = System.currentTimeMillis(),
+    /** Tool calls streamed during the turn that produced this message (from
+     *  STREAM_TOOL_CALL/STREAM_TOOL_RESULT), carried over when the final CHAT_MESSAGE
+     *  lands so the conversation can keep showing what the agent actually touched. */
+    val tools: List<ToolStep> = emptyList()
+)
+
+/** One streamed tool invocation: the tool name and, when its input carried one, the
+ *  file/command/pattern it targeted (see data/run/ToolTargets.kt). Not [Serializable] —
+ *  assembled locally from STREAM_TOOL_* frames. */
+data class ToolStep(
+    val tool: String,
+    val target: String? = null,
+    val done: Boolean = false,
+    val failed: Boolean = false
 )
 
 /** Exact wire shape of the bridge's CHAT_MESSAGE payload (main.js pushChatMessage). */
@@ -133,7 +147,9 @@ data class StreamToolResultDto(val sessionId: String? = null, val tool: String, 
  *  directly off the wire. */
 data class StreamingMessageDto(
     val text: String = "",
-    val runningTool: String? = null
+    val runningTool: String? = null,
+    /** Every tool call seen so far in this turn, oldest first (bounded). */
+    val toolSteps: List<ToolStep> = emptyList()
 )
 
 /** Wire shape of the bridge's PERMISSION_REQUEST payload (main.js relaySseEvent). */
@@ -152,6 +168,22 @@ data class QuestionRequestDto(
     val text: String? = null,
     val options: List<String>? = null
 )
+
+/**
+ * The permission decisions this client offers, mapped to the exact decision strings the
+ * pre-redesign client already sent in PERMISSION_REPLY ("allow" / "always" / "deny").
+ * The bridge forwards the string verbatim; whether "always" persists is decided entirely
+ * server-side — the app keeps no permission memory of its own.
+ */
+enum class PermissionDecision(val wire: String, val label: String) {
+    AllowOnce("allow", "Allowed once"),
+    AlwaysAllow("always", "Always allowed"),
+    Deny("deny", "Denied");
+
+    companion object {
+        fun fromWire(value: String): PermissionDecision? = entries.firstOrNull { it.wire == value }
+    }
+}
 
 /** Outbound wire shape for RemoteSessionManager.replyPermission's PERMISSION_REPLY
  *  frame (main.js reads payload.permissionId/payload.decision). */

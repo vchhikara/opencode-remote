@@ -2,6 +2,12 @@ package com.opencode.remote.data.network
 
 import android.util.Log
 import com.opencode.remote.data.dto.*
+import com.opencode.remote.data.run.RunEvent
+import com.opencode.remote.data.run.RunLogRecorder
+import com.opencode.remote.data.run.extractToolTarget
+import com.opencode.remote.data.run.isErrorToolOutput
+import com.opencode.remote.data.terminal.TerminalLine
+import com.opencode.remote.data.terminal.TerminalTranscript
 import io.ktor.websocket.Frame
 import io.ktor.websocket.close
 import io.ktor.websocket.readText
@@ -38,7 +44,8 @@ class RemoteSessionManager(
     private var port: Int = 8080,
     private var deviceName: String = "",
     private var token: String = "",
-    private val scope: CoroutineScope = CoroutineScope(Dispatchers.IO + Job())
+    private val scope: CoroutineScope = CoroutineScope(Dispatchers.IO + Job()),
+    private val clock: () -> Long = System::currentTimeMillis
 ) {
     private val ws = WsClient(scope)
     val connectionState: StateFlow<ConnectionState> = ws.connectionState
@@ -55,8 +62,9 @@ class RemoteSessionManager(
     val chatMessages: StateFlow<List<ChatMessageDto>> = _chatMessages.asStateFlow()
 
     // Raw text from the bridge ("Idle", "Thinking...", whatever the wrapped CLI
-    // emits) — no fixed vocabulary, so no DTO to decode into. AgentStateBadge maps
-    // it to a display style case-insensitively.
+    // emits) — no fixed vocabulary, so no DTO to decode into. The UI derives a
+    // presentation category from it (ui/state/AgentPresentation) without ever
+    // rejecting an unknown string.
     private val _agentState = MutableStateFlow("Idle")
     val agentState: StateFlow<String> = _agentState.asStateFlow()
 
@@ -121,11 +129,34 @@ class RemoteSessionManager(
 
     // Set when the bridge's CONNECTED payload carries a freshly issued
     // per-device token (Task 8.1) in place of the pairing secret just used to
-    // connect — the caller (MainDashboardScreen, which owns tokenStorage)
+    // connect — the caller (MainShell, which owns tokenStorage)
     // observes this to persist the new token so future connects use it
     // instead of the (possibly now-invalid) pairing secret.
     private val _issuedToken = MutableStateFlow<String?>(null)
     val issuedToken: StateFlow<String?> = _issuedToken.asStateFlow()
+
+    // deviceId from the CONNECTED handshake, when the bridge includes it — the only
+    // genuine way to tell which DEVICE_LIST entry is this phone (never guessed from
+    // the display name).
+    private val _currentDeviceId = MutableStateFlow<String?>(null)
+    val currentDeviceId: StateFlow<String?> = _currentDeviceId.asStateFlow()
+
+    // Most recent post-handshake ERROR frame (e.g. a rejected git subcommand or a
+    // path-escape attempt) so the UI can surface it instead of only logging it.
+    private val _lastError = MutableStateFlow<BridgeError?>(null)
+    val lastError: StateFlow<BridgeError?> = _lastError.asStateFlow()
+    private var errorSeq = 0L
+
+    // Run log: genuine activity observed on this connection (see RunLogRecorder).
+    private val runLog = RunLogRecorder(clock)
+    val runEvents: StateFlow<List<RunEvent>> = runLog.events
+    val runStartedAt: StateFlow<Long?> = runLog.runStartedAt
+
+    // TERMINAL_OUTPUT is a no-replay SharedFlow; the transcript keeps the accumulated
+    // lines here so the Terminal screen survives navigation without losing output.
+    private val terminal = TerminalTranscript()
+    val terminalLines: StateFlow<List<TerminalLine>> = terminal.lines
+    val terminalHistory: StateFlow<List<String>> = terminal.history
 
     // The bridge's FILE_CONTENT reply carries no path, only the raw text — remember
     // what we last asked for so the UI-facing FileContentDto can be paired up.
@@ -151,7 +182,9 @@ class RemoteSessionManager(
                     val wsFrame = json.decodeFromString<WebSocketFrame>(text)
                     when (wsFrame.eventType) {
                         "CONNECTED" -> {
-                            wsFrame.decodePayload<ConnectedPayload>(json)?.issuedToken?.let { fresh ->
+                            val connected = wsFrame.decodePayload<ConnectedPayload>(json)
+                            connected?.deviceId?.let { _currentDeviceId.value = it }
+                            connected?.issuedToken?.let { fresh ->
                                 if (fresh != token) {
                                     token = fresh
                                     _issuedToken.value = fresh
@@ -188,25 +221,47 @@ class RemoteSessionManager(
                 "WORKSPACE_LIST" -> frame.decodePayload<List<WorkspaceDto>>(json)?.let { _workspaces.value = it }
                 "WORKSPACE_OPENED" -> frame.decodePayload<OpenWorkspacePayload>(json)?.let { _activeWorkspace.value = it.path }
                 "CHAT_MESSAGE" -> frame.decodePayload<BridgeChatMessageDto>(json)?.let { msg ->
-                    _chatMessages.update { it + msg.toUi() }
+                    val turnTools = _streamingMessage.value?.toolSteps.orEmpty()
+                    _chatMessages.update { it + msg.toUi().copy(tools = turnTools) }
                     _streamingMessage.value = null // final message landed; turn is over
                 }
                 "STREAM_TEXT_DELTA" -> frame.decodePayload<StreamTextDeltaDto>(json)?.let { delta ->
                     _streamingMessage.update { (it ?: StreamingMessageDto()).copy(text = it?.text.orEmpty() + delta.text) }
+                    runLog.streamActivity()
                 }
                 "STREAM_TOOL_CALL" -> frame.decodePayload<StreamToolCallDto>(json)?.let { call ->
-                    _streamingMessage.update { (it ?: StreamingMessageDto()).copy(runningTool = call.tool) }
+                    val target = extractToolTarget(call.input)
+                    _streamingMessage.update { current ->
+                        val base = current ?: StreamingMessageDto()
+                        base.copy(
+                            runningTool = call.tool,
+                            toolSteps = (base.toolSteps + ToolStep(call.tool, target)).takeLast(MAX_TOOL_STEPS)
+                        )
+                    }
+                    runLog.toolCall(call.tool, target)
                 }
-                "STREAM_TOOL_RESULT" -> frame.decodePayload<StreamToolResultDto>(json)?.let {
-                    _streamingMessage.update { (it ?: StreamingMessageDto()).copy(runningTool = null) }
+                "STREAM_TOOL_RESULT" -> frame.decodePayload<StreamToolResultDto>(json)?.let { result ->
+                    val failed = isErrorToolOutput(result.output)
+                    _streamingMessage.update { current ->
+                        val base = current ?: StreamingMessageDto()
+                        base.copy(runningTool = null, toolSteps = closeToolStep(base.toolSteps, result.tool, failed))
+                    }
+                    runLog.toolResult(result.tool, failed)
                 }
                 "SESSION_LIST" -> frame.decodePayload<List<SessionDto>>(json)?.let { _sessions.value = it }
                 "SESSION_SWITCHED" -> frame.decodePayload<SessionSwitchedDto>(json)?.let { _activeSessionId.value = it.id }
-                "PERMISSION_REQUEST" -> frame.decodePayload<PermissionRequestDto>(json)?.let { _pendingPermission.value = it }
-                "QUESTION_REQUEST" -> frame.decodePayload<QuestionRequestDto>(json)?.let { _pendingQuestion.value = it }
+                "PERMISSION_REQUEST" -> frame.decodePayload<PermissionRequestDto>(json)?.let {
+                    _pendingPermission.value = it
+                    runLog.permissionRequested(it.tool)
+                }
+                "QUESTION_REQUEST" -> frame.decodePayload<QuestionRequestDto>(json)?.let {
+                    _pendingQuestion.value = it
+                    runLog.questionAsked(it.text)
+                }
                 "AGENT_STATE" -> frame.decodePayload<String>(json)?.let {
                     _agentState.value = it
                     if (it.equals("Idle", ignoreCase = true)) _streamingMessage.value = null
+                    runLog.agentState(it)
                 }
                 "FILE_TREE" -> frame.decodePayload<List<FileNodeDto>>(json)?.let { _fileTree.value = it }
                 "FILE_CONTENT" -> frame.decodePayload<String>(json)?.let { content ->
@@ -215,19 +270,26 @@ class RemoteSessionManager(
                 "FILE_DIFF" -> frame.decodePayload<BridgeFileDiffDto>(json)?.let { diff ->
                     val entry = FileDiffDto(filePath = diff.fileName, patch = diff.diffText)
                     setPendingDiffs { list -> list.filterNot { it.filePath == entry.filePath } + entry }
+                    runLog.diffProposed(entry.filePath)
                 }
-                "TERMINAL_OUTPUT" -> frame.decodePayload<String>(json)?.let { _terminalOutput.emit(it) }
+                "TERMINAL_OUTPUT" -> frame.decodePayload<String>(json)?.let {
+                    terminal.appendOutput(it)
+                    _terminalOutput.emit(it)
+                }
                 "TASK_UPDATED" -> frame.decodePayload<TaskDto>(json)?.let { task ->
                     _tasks.update { it + (task.id to task) }
+                    runLog.task(task)
                 }
                 "TASK_REMOVED" -> frame.decodePayload<String>(json)?.let { id ->
                     _tasks.update { it - id }
+                    runLog.taskRemoved(id)
                 }
                 "GIT_STATUS" -> frame.decodePayload<GitStatusDto>(json)?.let { _gitStatus.value = it }
                 "DEVICE_LIST" -> frame.decodePayload<List<DeviceDto>>(json)?.let { _devices.value = it }
                 "AUDIT_LOG" -> frame.decodePayload<List<AuditLogEntryDto>>(json)?.let { _auditLog.value = it }
                 "ERROR" -> {
                     val msg = frame.decodePayload<ErrorPayload>(json)?.message ?: "Unknown error"
+                    _lastError.value = BridgeError(++errorSeq, msg, clock())
                     Log.e("RemoteSessionManager", "Server sent error: $msg")
                 }
             }
@@ -253,6 +315,7 @@ class RemoteSessionManager(
     fun sendPrompt(text: String) {
         // The bridge never echoes the user's own prompt back, so append it locally.
         _chatMessages.update { it + ChatMessageDto(role = ChatRole.User, content = text) }
+        runLog.promptSent(text)
         sendString("PROMPT", text)
     }
 
@@ -275,23 +338,31 @@ class RemoteSessionManager(
     fun acceptDiff(filePath: String) {
         sendString("ACCEPT_DIFF", filePath)
         setPendingDiffs { list -> list.filterNot { it.filePath == filePath } }
+        runLog.diffKept(filePath)
     }
 
     fun rejectDiff(filePath: String) {
         sendString("REJECT_DIFF", filePath)
         setPendingDiffs { list -> list.filterNot { it.filePath == filePath } }
+        runLog.diffReverted(filePath)
     }
 
     /** decision: bridge forwards this string verbatim as {decision} to
      *  POST /permission/{id}/reply — e.g. "allow" or "deny". */
     fun replyPermission(permissionId: String, decision: String) {
         sendRaw("PERMISSION_REPLY", json.encodeToJsonElement(PermissionReplyPayload(permissionId, decision)))
-        if (_pendingPermission.value?.permissionId == permissionId) _pendingPermission.value = null
+        val pending = _pendingPermission.value
+        if (pending?.permissionId == permissionId) _pendingPermission.value = null
+        runLog.permissionAnswered(
+            PermissionDecision.fromWire(decision)?.label ?: "Answered: $decision",
+            pending?.takeIf { it.permissionId == permissionId }?.tool
+        )
     }
 
     fun replyQuestion(questionId: String, answer: String) {
         sendRaw("QUESTION_REPLY", json.encodeToJsonElement(QuestionReplyPayload(questionId, answer)))
         if (_pendingQuestion.value?.questionId == questionId) _pendingQuestion.value = null
+        runLog.questionAnswered(answer)
     }
 
     fun listSessions() = sendRaw("LIST_SESSIONS")
@@ -304,7 +375,13 @@ class RemoteSessionManager(
 
     fun forkSession(sessionId: String) = sendString("FORK_SESSION", sessionId)
 
-    fun runTerminal(command: String) = sendString("TERMINAL", command)
+    fun runTerminal(command: String) {
+        terminal.appendCommand(command)
+        sendString("TERMINAL", command)
+    }
+
+    /** Clears the local transcript only; nothing is sent to the bridge. */
+    fun clearTerminalTranscript() = terminal.clear()
 
     /** Resizes the active PTY-backed terminal (Task 4.2.2) — call this from a
      *  real layout/size-change callback (see TerminalScreen's onSizeChanged),
@@ -313,9 +390,19 @@ class RemoteSessionManager(
         sendRaw("TERMINAL_RESIZE", json.encodeToJsonElement(TerminalResizePayload(cols, rows)))
     }
 
-    fun killTask(taskId: String) = sendString("KILL_TASK", taskId)
+    fun killTask(taskId: String) {
+        runLog.stopRequested(_tasks.value[taskId]?.name ?: taskId)
+        sendString("KILL_TASK", taskId)
+    }
 
-    fun runGit(command: String) = sendString("GIT", command)
+    fun runGit(command: String) {
+        runLog.gitCommand(command)
+        sendString("GIT", command)
+    }
+
+    fun clearLastError() {
+        _lastError.value = null
+    }
 
     /** Task 8.2.2: lists paired devices (never exposes raw tokens — see
      *  [DeviceDto]); response lands in [devices]. */
@@ -331,4 +418,19 @@ class RemoteSessionManager(
     fun disconnect() {
         ws.disconnect()
     }
+
+    private fun closeToolStep(steps: List<ToolStep>, tool: String, failed: Boolean): List<ToolStep> {
+        var idx = steps.indexOfLast { !it.done && it.tool == tool }
+        if (idx < 0) idx = steps.indexOfLast { !it.done }
+        if (idx < 0) return steps
+        return steps.toMutableList().also { it[idx] = it[idx].copy(done = true, failed = failed) }
+    }
+
+    private companion object {
+        const val MAX_TOOL_STEPS = 50
+    }
 }
+
+/** A post-handshake ERROR frame surfaced to the UI. [id] increases per error so the
+ *  same message arriving twice is still shown twice. */
+data class BridgeError(val id: Long, val message: String, val receivedAt: Long)
