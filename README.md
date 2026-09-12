@@ -47,21 +47,21 @@ OpenCode Remote exposes the parts of an agent workflow that actually matter on m
 
 | Capability | OpenCode Remote | Mobile SSH (e.g., Termius, Termux) | Mobile Web / PWA (e.g., VS Code Web) | Proprietary Cloud (e.g., Replit, CodeAgent) |
 | --- | --- | --- | --- | --- |
-| Live agent streaming | ✓ | Partial | ✓ | ✓ |
-| Tool permission approval | ✓ | Partial | Partial | ✓ |
-| Agent question prompts | ✓ | Partial | Partial | ✓ |
-| Multi-file diff review | ✓ | ✗ | Partial | Partial |
-| Interactive PTY terminal | ✓ | ✓ | Partial | ✗ |
-| File browser | ✓ | Partial | Partial | ✓ |
-| Session switching / forking | ✓ | Partial | Partial | ✓ |
-| Task interruption | ✓ | ✓ | ✓ | ✓ |
-| Git operations | ✓ | Partial | ✓ | Partial |
-| Device revocation | ✓ | Partial | Partial | ✓ |
-| Audit trail | ✓ | Partial | ✓ | ✓ |
-| Native Android UI | ✓ | Partial | ✗ | ✓ |
-| Thumb-optimized action targets | ✓ | ✗ | ✗ | ✓ |
-| Self-hosted / Zero code relay | ✓ | ✓ | Partial | ✗ |
-| Background unblock alerts | ✓ | ✗ | Partial | ✓ |
+| Live agent streaming | ✅ | Partial | ✅ | ✅ |
+| Tool permission approval | ✅ | Partial | Partial | ✅ |
+| Agent question prompts | ✅ | Partial | Partial | ✅ |
+| Multi-file diff review | ✅ | ❌ | Partial | Partial |
+| Interactive PTY terminal | ✅ | ✅ | Partial | ❌ |
+| File browser | ✅ | Partial | Partial | ✅ |
+| Session switching / forking | ✅ | Partial | Partial | ✅ |
+| Task interruption | ✅ | ✅ | ✅ | ✅ |
+| Git operations | ✅ | Partial | ✅ | Partial |
+| Device revocation | ✅ | Partial | Partial | ✅ |
+| Audit trail | ✅ | Partial | ✅ | ✅ |
+| Native Android UI | ✅ | Partial | ❌ | ✅ |
+| Thumb-optimized action targets | ✅ | ❌ | ❌ | ✅ |
+| Self-hosted / Zero code relay | ✅ | ✅ | Partial | ❌ |
+| Background unblock alerts | ✅ | ❌ | Partial | ✅ |
 
 The Android client is built with **Kotlin + Jetpack Compose + Material 3** rather than wrapping OpenCode in a WebView.
 
