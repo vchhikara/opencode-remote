@@ -36,18 +36,13 @@ From your phone you can:
 
 **LAN-first. No hosted OpenCode Remote backend is required.**
 
-For access outside your local network, use your own private networking layer such as **Tailscale**, or optionally expose the bridge through a tunnel such as **Cloudflare Tunnel**.
+For access outside your local network, use your own private networking layer such as [Tailscale](https://tailscale.com), or optionally expose the bridge through a tunnel such as [Cloudflare Tunnel](https://developers.cloudflare.com/tunnel).
 
 ---
 
 ## Why OpenCode Remote?
 
-SSH gives you a shell.
-
-A mobile browser gives you a webpage.
-
-Neither is a particularly good interface for supervising an autonomous coding agent from a phone.
-
+SSH gives you a shell. A mobile browser gives you a web-page. Neither is a particularly good interface for supervising an autonomous coding agent from a phone.
 OpenCode Remote exposes the parts of an agent workflow that actually matter on mobile:
 
 | Capability | OpenCode Remote |
@@ -90,9 +85,7 @@ flowchart LR
     Tail -.-> Phone
 ```
 
-The bridge is deliberately small.
-
-It sits between the Android client and the local OpenCode process and handles:
+The bridge is deliberately small yet efficient. Your actual development environment stays on the host machine. Bridge sits between the Android client and the local OpenCode process and handles:
 
 - authentication
 - device pairing
@@ -104,130 +97,6 @@ It sits between the Android client and the local OpenCode process and handles:
 - terminal I/O
 - Git execution
 - audit logging
-
-Your actual development environment stays on the host machine.
-
----
-
-## What Works Today
-
-### Agent control
-
-- Real-time OpenCode response streaming
-- incremental text deltas
-- tool-call events
-- tool results
-- prompt submission
-- task cancellation
-- mid-task steering
-- concurrent message queuing
-
-### Interactive agent requests
-
-OpenCode permission and question events become native Android cards.
-
-Approve or deny operations such as:
-
-```bash
-write_file
-edit
-filesystem access
-```
-
-Agent clarification requests can also be answered directly from the phone.
-
-### Interactive PTY
-
-The terminal is not a static command-output view.
-
-It supports:
-
-- streaming terminal output
-- ANSI sequences
-- interactive input
-- terminal resizing
-- dynamic `cols` / `rows`
-- keyboard-induced viewport changes
-- orientation changes
-
-### Diff review
-
-Inspect unified diffs generated while the agent modifies the workspace.
-
-Multi-file changes can be reviewed without opening the repository on the host machine.
-
-### Session management
-
-From Android you can:
-
-- list sessions
-- create sessions
-- switch sessions
-- fork sessions
-- interrupt active tasks
-
-The active session ID survives bridge restarts through:
-
-```code
-.opencode-remote-session.json
-```
-
-### Workspace browser
-
-Browse registered workspaces and source files directly from the phone.
-
-Filesystem operations are confined to:
-
-```code
-WORKSPACE_ROOT
-```
-
-Paths are resolved before access to prevent simple `../` traversal outside the configured workspace boundary.
-
-### Git
-
-The bridge exposes a restricted Git interface rather than passing arbitrary Git strings directly through a shell.
-
-Supported operations include:
-
-```bash
-status
-add
-commit
-diff
-log
-branch
-stash
-push
-pull
-checkout
-```
-
-Git input is tokenized and shell chaining operators are rejected before execution.
-
-### Device authentication
-
-Initial pairing uses a one-time secret.
-
-Successful pairing creates a separate persistent token for that device.
-
-That means a lost phone can be revoked without rotating every other paired device.
-
-### Audit trail
-
-Security-relevant operations are written as JSON Lines records to:
-
-```bash
-.opencode-remote-audit.log
-```
-
-Recorded events include:
-
-- terminal commands
-- Git actions
-- permission decisions
-- device identity
-- timestamps
 
 ---
 
@@ -241,13 +110,11 @@ Host machine:
 - OpenCode CLI
 - Git
 
-Android:
+Android (The project currently targets / compiles against Android SDK 36.):
 
 - Android 7.0 / API 24+
 - Android Studio for building from source
 - JDK 17+
-
-The project currently targets / compiles against Android SDK 36.
 
 ---
 
@@ -262,11 +129,7 @@ npm test
 npm start
 ```
 
-The bridge prints:
-
-- its listening address
-- a QR pairing code
-- the pairing secret
+The bridge prints its listening address, a QR pairing code and the pairing secret (Auth token)
 
 Default bridge port:
 
@@ -297,17 +160,19 @@ cd android-application
 ./gradlew :app:assembleDebug
 ```
 
-APK:
+### APK:
 
 ```text
 android-application/app/build/outputs/apk/debug/app-debug.apk
 ```
 
-Install using ADB:
+### Install using ADB:
 
 ```bash
 adb install -r app/build/outputs/apk/debug/app-debug.apk
 ```
+
+### Android Studio
 
 Or open `android-application/` in Android Studio and run the app normally.
 
@@ -315,19 +180,13 @@ Or open `android-application/` in Android Studio and run the app normally.
 
 ## 3. Pair
 
-Open **OpenCode Remote**.
-
-On the Pair Device screen:
+Open **OpenCode Remote**. On the Pair Device screen:
 
 1. Tap **Scan QR Code**
 2. Scan the code shown by the bridge
 3. Tap **Connect**
 
-You can also enter the host address and pairing secret manually.
-
-Once pairing succeeds, the one-time secret is exchanged for a persistent per-device credential.
-
-Future connections use the device credential instead of the pairing secret.
+You can also enter the host address and pairing secret manually. Once pairing succeeds, the one-time secret is exchanged for a persistent per-device credential. The future connections use the device credential instead of the pairing secret.
 
 ---
 
@@ -353,15 +212,11 @@ sequenceDiagram
     B-->>A: Streaming events
 ```
 
-Device registrations are stored in:
+The Android application stores its credential in encrypted application storage. A device can be revoked independently from the Settings screen. Device registrations are stored in:
 
 ```text
 ~/.opencode-remote-devices.json
 ```
-
-The Android application stores its credential in encrypted application storage.
-
-A device can be revoked independently from the Settings screen.
 
 ---
 
@@ -369,15 +224,7 @@ A device can be revoked independently from the Settings screen.
 
 ## Tailscale
 
-For most users, **Tailscale is the simplest remote-access option**.
-
-Install Tailscale on both:
-
-- the development machine
-- the Android phone
-
-Join both devices to the same tailnet.
-
+For most users, **Tailscale is the simplest remote-access option**. Install Tailscale on both development machine (desktop with Opencode CLI installed) and the Android phone Join both devices to the same tailnet.
 Start the bridge normally:
 
 ```bash
@@ -391,17 +238,15 @@ Then connect the Android client to the machine's Tailscale address:
 100.x.y.z:8080
 ```
 
-Tailscale encrypts traffic between devices using WireGuard.
-
-No router port-forwarding is required.
+No need for router port-forwarding, Tailscale encrypts traffic between devices using WireGuard. 
 
 ---
 
 ## Cloudflare Tunnel
 
-Cloudflare Tunnel can also publish the bridge without opening an inbound router port.
+> Cloudflare Tunnel routes traffic through Cloudflare infrastructure. Use Tailscale if your requirement is an encrypted private network without exposing the bridge as a public hostname.
 
-Create a tunnel:
+Cloudflare Tunnel can also publish the bridge without opening an inbound router port. Create a tunnel:
 
 ```bash
 cloudflared tunnel login
@@ -434,23 +279,121 @@ cloudflared tunnel run opencode-remote
 
 Then configure the Android client to connect through the published hostname.
 
-> Cloudflare Tunnel routes traffic through Cloudflare infrastructure. Use Tailscale if your requirement is an encrypted private network without exposing the bridge as a public hostname.
+---
+
+
+## What Works Today
+
+### Agent control
+
+- Real-time OpenCode response streaming
+- incremental text deltas
+- tool-call events
+- tool results
+- prompt submission
+- task cancellation
+- mid-task steering
+- concurrent message queuing
+
+### Interactive agent requests
+
+OpenCode permission and question events become native Android cards. Agent clarification requests can be answered directly from the phone.
+Approve or deny operations such as:
+
+```bash
+write_file
+edit
+filesystem access
+```
+
+### Interactive PTY
+
+The terminal is not a static command-output view. It supports:
+
+- streaming terminal output
+- ANSI sequences
+- interactive input
+- terminal resizing
+- dynamic `cols` / `rows`
+- keyboard-induced viewport changes
+- orientation changes
+
+### Diff review
+
+Inspect unified diffs generated while the agent modifies the workspace. Multi-file changes can be reviewed without opening the repository on the host machine.
+
+### Session management
+
+From Android you can:
+
+- list sessions
+- create sessions
+- switch sessions
+- fork sessions
+- interrupt active tasks
+
+The active session ID survives bridge restarts through:
+
+```code
+.opencode-remote-session.json
+```
+
+### Workspace browser
+
+Browse registered work-spaces and source files directly from the phone. File-system operations are confined to:
+
+```code
+WORKSPACE_ROOT
+```
+
+Paths are resolved before access to prevent simple `../` traversal outside the configured workspace boundary.
+
+### Git
+
+The bridge exposes a restricted Git interface rather than passing arbitrary Git strings directly through a shell. Git input is tokenized and shell chaining operators are rejected before execution. Supported operations include:
+
+```bash
+status
+add
+commit
+diff
+log
+branch
+stash
+push
+pull
+checkout
+```
+
+### Device authentication
+
+Initial pairing uses a one-time secret to generate a device-specific persistent token, ensuring a lost phone can be revoked without forcing every other paired device to re-authenticate.
+
+### Audit trail
+
+Security-relevant operations are written as JSON Lines records to:
+
+```bash
+.opencode-remote-audit.log
+```
+
+Recorded events include:
+
+- terminal commands
+- Git actions
+- permission decisions
+- device identity
+- timestamps
 
 ---
 
 # Security Model
 
-OpenCode Remote exposes capabilities that can modify source code and execute commands.
-
-That makes the bridge a security boundary, not just a transport proxy.
+OpenCode Remote exposes capabilities that can modify source code and execute commands. That makes the bridge a security boundary, not just a transport proxy.
 
 ### Per-device authentication
 
-Initial pairing creates isolated credentials for each phone.
-
-A compromised device can be revoked without changing credentials for other devices.
-
-Authentication comparisons use timing-safe equality where appropriate.
+Initial pairing creates isolated credentials for each phone. A compromised device can be revoked without changing credentials for other devices. Authentication comparisons use timing-safe equality where appropriate.
 
 ### Filesystem confinement
 
@@ -460,21 +403,15 @@ File operations are resolved against the configured:
 WORKSPACE_ROOT
 ```
 
-Requests that resolve outside that boundary are rejected.
-
-For example:
+Requests that resolve outside that boundary are rejected and must not escape the configured workspace. For example:
 
 ```text
 ../../etc/passwd
 ```
 
-must not escape the configured workspace.
-
 ### Restricted Git execution
 
-The Git interface accepts an explicit set of supported subcommands.
-
-Shell control operators such as:
+The Git interface accepts an explicit set of supported subcommands. Shell control operators are rejected instead of being forwarded directly into a shell command:
 
 ```text
 &&
@@ -483,27 +420,17 @@ Shell control operators such as:
 `
 ```
 
-are rejected instead of being forwarded directly into a shell command.
-
 ### Explicit permission decisions
 
-The bridge does not silently convert OpenCode permission requests into approvals.
-
-If OpenCode asks for permission, execution waits for an explicit decision from the client.
+The bridge does not silently convert OpenCode permission requests into approvals. If OpenCode asks for permission, execution waits for an explicit decision from the client.
 
 ### Device revocation
 
-Each paired phone has its own credential.
-
-Revoking one device does not invalidate every client.
+Each paired phone has its own credential. Revoking one device does not invalidate every client.
 
 ### Audit logging
 
-Terminal commands, Git operations, and permission decisions are appended to the local audit file.
-
-The audit log is intended for traceability.
-
-It is **not currently a cryptographically tamper-evident log**. A user or process with sufficient access to the host filesystem may modify it.
+Terminal commands, Git operations, and permission decisions are appended to the local audit file. The audit log is intended for traceability. It is **not currently a cryptographically tamper-evident log**. A user or process with sufficient access to the host filesystem may modify it.
 
 ---
 
@@ -519,21 +446,15 @@ A direct:
 ws://192.168.x.x:8080
 ```
 
-connection uses application-level device authentication but does **not** provide TLS encryption by itself.
-
-Use a trusted local network or an encrypted overlay network.
+connection uses application-level device authentication but does **not** provide TLS encryption by itself. Use a trusted local network or an encrypted overlay network.
 
 ### Tailscale
 
-Tailscale provides an encrypted network between the Android device and host.
-
-This is the recommended configuration for remote access.
+Tailscale provides an encrypted network between the Android device and host. This is the recommended configuration for remote access.
 
 ### Cloudflare Tunnel
 
-Cloudflare Tunnel provides encrypted transport to Cloudflare's network and avoids exposing a listening port directly on your router.
-
-It does, however, introduce Cloudflare infrastructure into the connection path.
+Cloudflare Tunnel provides encrypted transport to Cloudflare's network and avoids exposing a listening port directly on your router. It does, however, introduce Cloudflare infrastructure into the connection path.
 
 ---
 
@@ -555,9 +476,7 @@ It does **not** attempt to protect against:
 - malicious modifications to the bridge source itself
 - vulnerabilities in OpenCode, Node.js, Android, Tailscale, Cloudflare, or other dependencies
 
-The bridge runs with the permissions of the user who starts it.
-
-It does not provide privilege escalation.
+The bridge runs with the permissions of the user who starts it. It does not provide privilege escalation.
 
 ---
 
@@ -727,23 +646,15 @@ The application has also been exercised on physical Android hardware.
 
 ### No per-hunk diff approval
 
-OpenCode's current interface exposes whole-file diff information rather than a full interactive patch staging protocol.
-
-OpenCode Remote therefore reviews diffs but does not implement arbitrary per-hunk agent patch acceptance.
+OpenCode's current interface exposes whole-file diff information rather than a full interactive patch staging protocol. OpenCode Remote therefore reviews diffs but does not implement arbitrary per-hunk agent patch acceptance.
 
 ### No bundled FCM infrastructure
 
-Firebase Cloud Messaging is not configured by default.
-
-FCM requires project-specific Firebase configuration and would introduce an additional external service.
-
-While the application is alive or backgrounded, it uses its WebSocket connection for live events.
+Firebase Cloud Messaging is not configured by default. FCM requires project-specific Firebase configuration and would introduce an additional external service. While the application is alive or backgrounded, it uses its WebSocket connection for live events.
 
 ### Host permissions still apply
 
-The bridge inherits the permissions of the operating-system user that launched it.
-
-It deliberately does not attempt to provide root or administrator escalation.
+The bridge inherits the permissions of the operating-system user that launched it. It deliberately does not attempt to provide root or administrator escalation.
 
 ### Audit logs are not immutable
 
@@ -753,7 +664,7 @@ The audit log is append-oriented for normal bridge operation, but it is not prot
 
 # Contributing
 
-Before opening a pull request:
+Before opening a pull request both suites should pass:
 
 ```bash
 cd bridge
@@ -768,7 +679,6 @@ cd android-application
 ./gradlew :app:assembleDebug
 ```
 
-Both suites should pass.
 
 Architecture decisions live in:
 
@@ -782,13 +692,7 @@ Contribution guidelines:
 
 ## Built for the moments when opening the laptop is unnecessary
 
-Review the agent's diff from the couch.
-
-Approve a permission request from another room.
-
-Check a long-running refactor while away from your desk.
-
-Open a terminal when something actually needs intervention.
+Review the agent's diff from the couch. Approve a permission request from another room. Check a long-running refactor while away from your desk. Open a terminal when something actually needs intervention.
 
 **The development environment stays on the development machine. The control surface goes with you.**
 
