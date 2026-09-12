@@ -254,7 +254,7 @@ The project currently targets / compiles against Android SDK 36.
 ## 1. Start the bridge
 
 ```bash
-git clone <YOUR_REPOSITORY_URL>
+gh repo clone vchhikara/opencode-remote
 cd opencode-remote/bridge
 
 npm install
