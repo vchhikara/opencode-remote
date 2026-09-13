@@ -40,6 +40,23 @@ For access outside your local network, use your own private networking layer suc
 
 ---
 
+## Screenshots
+
+<table>
+  <tr>
+    <td align="center" width="33%"><img src="docs/screenshots/menu.jpg" width="100%"><br/><sub>Workspace menu</sub></td>
+    <td align="center" width="33%"><img src="docs/screenshots/run-log.jpg" width="100%"><br/><sub>Live run log</sub></td>
+    <td align="center" width="33%"><img src="docs/screenshots/git.jpg" width="100%"><br/><sub>Git status &amp; commit</sub></td>
+  </tr>
+  <tr>
+    <td align="center" width="33%"><img src="docs/screenshots/sessions.jpg" width="100%"><br/><sub>Sessions</sub></td>
+    <td align="center" width="33%"><img src="docs/screenshots/paired-devices.jpg" width="100%"><br/><sub>Paired devices &amp; audit log</sub></td>
+    <td align="center" width="33%"><img src="docs/screenshots/settings.jpg" width="100%"><br/><sub>Settings</sub></td>
+  </tr>
+</table>
+
+---
+
 ## Why OpenCode Remote?
 
 SSH gives you a shell. A mobile browser gives you a web-page. Neither is a particularly good interface for supervising an autonomous coding agent from a phone.
