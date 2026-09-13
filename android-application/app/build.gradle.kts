@@ -52,6 +52,11 @@ android {
   testOptions {
     unitTests {
       isIncludeAndroidResources = true
+      // Lets unmocked android.util.Log calls return defaults instead of
+      // throwing "not mocked" — needed the first time a test exercises the
+      // ERROR-frame path (RemoteSessionManager logs via Log.e there), which
+      // no earlier test happened to reach.
+      isReturnDefaultValues = true
     }
   }
 }

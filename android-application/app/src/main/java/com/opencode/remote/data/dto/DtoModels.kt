@@ -209,6 +209,47 @@ data class SessionSwitchedDto(val id: String)
 @Serializable
 data class NewSessionPayload(val title: String? = null)
 
+/** Wire shape of one entry in the bridge's ALL_SESSIONS_LIST payload (main.js
+ *  FETCH_ALL_SESSIONS / sessionStore.listAllSessions) — a global,
+ *  cross-workspace session, read directly from OpenCode's own on-disk
+ *  session database rather than scoped to activeWorkspace. `reachable`
+ *  reflects whether `worktree` currently exists on disk; an unreachable
+ *  session is still listed, never dropped, so the UI must render it
+ *  disabled rather than skip it. See adr/0002-global-cross-workspace-session-search.md. */
+@Serializable
+data class GlobalSessionDto(
+    val id: String,
+    val title: String,
+    val worktree: String,
+    val updatedAt: Long,
+    val reachable: Boolean
+)
+
+/** Outbound wire shape for RemoteSessionManager.fetchAllSessions's
+ *  FETCH_ALL_SESSIONS frame. Both fields optional on the wire; `limit`
+ *  null lets the bridge apply its own default. */
+@Serializable
+data class FetchAllSessionsPayload(val limit: Int? = null, val cursor: String? = null)
+
+/** Wire shape of the bridge's ALL_SESSIONS_LIST payload (main.js
+ *  FETCH_ALL_SESSIONS reply) — `nextCursor` is present only when more rows
+ *  exist beyond this page. */
+@Serializable
+data class AllSessionsListDto(
+    val sessions: List<GlobalSessionDto>,
+    val nextCursor: String? = null
+)
+
+/** Outbound wire shape for RemoteSessionManager.openGlobalSession's
+ *  OPEN_SESSION_GLOBAL frame (main.js reads payload.id/payload.worktree). */
+@Serializable
+data class OpenSessionGlobalPayload(val id: String, val worktree: String)
+
+/** Wire shape of the bridge's SESSION_OPENED payload (main.js
+ *  OPEN_SESSION_GLOBAL reply). */
+@Serializable
+data class SessionOpenedDto(val id: String, val worktree: String)
+
 /** Outbound wire shape for RemoteSessionManager.resizeTerminal's TERMINAL_RESIZE
  *  frame (main.js reads payload.cols/payload.rows, resizes the active PTY —
  *  Task 4.2.2). */

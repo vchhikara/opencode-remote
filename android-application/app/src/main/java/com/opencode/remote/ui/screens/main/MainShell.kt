@@ -66,6 +66,7 @@ import com.opencode.remote.ui.screens.files.FileExplorerScreen
 import com.opencode.remote.ui.screens.git.GitScreen
 import com.opencode.remote.ui.screens.home.HomeScreen
 import com.opencode.remote.ui.screens.runlog.RunLogScreen
+import com.opencode.remote.ui.screens.sessions.GlobalSessionsScreen
 import com.opencode.remote.ui.screens.sessions.SessionsScreen
 import com.opencode.remote.ui.screens.settings.SettingsScreen
 import com.opencode.remote.ui.screens.terminal.TerminalScreen
@@ -176,7 +177,14 @@ fun MainShell(
                 composable(Destination.Diffs.route) { DiffReviewScreen(sessionManager, onDone = { go(Destination.Home) }) }
                 composable(Destination.Git.route) { GitScreen(sessionManager) }
                 composable(Destination.Files.route) { FileExplorerScreen(sessionManager, onFileSelected = onOpenFileViewer) }
-                composable(Destination.Sessions.route) { SessionsScreen(sessionManager, onOpened = { go(Destination.Home) }) }
+                composable(Destination.Sessions.route) {
+                    SessionsScreen(
+                        sessionManager,
+                        onOpened = { go(Destination.Home) },
+                        onOpenAllWorkspaces = { go(Destination.AllSessions) }
+                    )
+                }
+                composable(Destination.AllSessions.route) { GlobalSessionsScreen(sessionManager, onOpened = { go(Destination.Home) }) }
                 composable(Destination.Devices.route) { DevicesScreen(sessionManager) }
                 composable(Destination.Settings.route) {
                     SettingsScreen(

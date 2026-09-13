@@ -24,6 +24,9 @@ sealed class NavRoutes(val route: String) {
         object Settings : Destination("settings", "Settings")
         /** Reached from the header / drawer title, not listed as a drawer row. */
         object Workspace : Destination("workspace", "Switch workspace")
+        /** Reached from the Sessions screen header (ADR-0002), not listed as
+         *  a drawer row — same precedent as [Workspace]. */
+        object AllSessions : Destination("allSessions", "All workspaces")
 
         companion object {
             // A getter, not a stored list: a stored list in the companion would be built
@@ -33,7 +36,7 @@ sealed class NavRoutes(val route: String) {
                 get() = listOf(Home, RunLog, Terminal, Diffs, Git, Files, Sessions, Devices, Settings)
 
             fun fromRoute(route: String?): Destination? =
-                (drawerItems + Workspace).firstOrNull { it.route == route }
+                (drawerItems + Workspace + AllSessions).firstOrNull { it.route == route }
         }
     }
 }

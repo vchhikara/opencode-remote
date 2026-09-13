@@ -112,6 +112,33 @@ class RemoteSessionManager(
     private val _activeSessionId = MutableStateFlow<String?>(null)
     val activeSessionId: StateFlow<String?> = _activeSessionId.asStateFlow()
 
+    // Global, cross-workspace session list (ADR-0002) — distinct from
+    // [_sessions], which the bridge scopes to activeWorkspace only. Replaced
+    // wholesale on each ALL_SESSIONS_LIST reply; fetchAllSessions(cursor)
+    // callers combine pages themselves if they want to accumulate one.
+    private val _allSessions = MutableStateFlow<List<GlobalSessionDto>>(emptyList())
+    val allSessions: StateFlow<List<GlobalSessionDto>> = _allSessions.asStateFlow()
+
+    private val _allSessionsNextCursor = MutableStateFlow<String?>(null)
+    val allSessionsNextCursor: StateFlow<String?> = _allSessionsNextCursor.asStateFlow()
+
+    private val _allSessionsError = MutableStateFlow<String?>(null)
+    val allSessionsError: StateFlow<String?> = _allSessionsError.asStateFlow()
+
+    private val _allSessionsLoading = MutableStateFlow(false)
+    val allSessionsLoading: StateFlow<Boolean> = _allSessionsLoading.asStateFlow()
+
+    // Tracks an in-flight OPEN_SESSION_GLOBAL separately from the fetch-list
+    // loading/error state above — opening a session (which restarts opencode
+    // serve bound to a different workspace on the bridge) is not instant, and
+    // the UI needs its own loading/error signal so a row tap can show a
+    // spinner and reject a second tap while it's in flight (Phase 4.4/4.6).
+    private val _openGlobalSessionLoading = MutableStateFlow(false)
+    val openGlobalSessionLoading: StateFlow<Boolean> = _openGlobalSessionLoading.asStateFlow()
+
+    private val _openGlobalSessionError = MutableStateFlow<String?>(null)
+    val openGlobalSessionError: StateFlow<String?> = _openGlobalSessionError.asStateFlow()
+
     private val _terminalOutput = MutableSharedFlow<String>(extraBufferCapacity = 100)
     val terminalOutput: SharedFlow<String> = _terminalOutput.asSharedFlow()
 
@@ -266,6 +293,27 @@ class RemoteSessionManager(
                 }
                 "SESSION_LIST" -> frame.decodePayload<List<SessionDto>>(json)?.let { _sessions.value = it }
                 "SESSION_SWITCHED" -> frame.decodePayload<SessionSwitchedDto>(json)?.let { _activeSessionId.value = it.id }
+                "ALL_SESSIONS_LIST" -> {
+                    _allSessionsLoading.value = false
+                    frame.decodePayload<AllSessionsListDto>(json)?.let {
+                        _allSessions.value = it.sessions
+                        _allSessionsNextCursor.value = it.nextCursor
+                        _allSessionsError.value = null
+                    }
+                }
+                // Reuses OPEN_WORKSPACE's WORKSPACE_OPENED stale-tree-clear (this
+                // frame changes activeWorkspace too, via OPEN_SESSION_GLOBAL on the
+                // bridge) plus SESSION_SWITCHED's activeSessionId update — see
+                // adr/0002-global-cross-workspace-session-search.md. Applying only
+                // what each of those two frames already does individually, not new
+                // scope, per the Files-bug lesson about not leaving a stale-cache
+                // path unhandled on a workspace-changing frame.
+                "SESSION_OPENED" -> frame.decodePayload<SessionOpenedDto>(json)?.let {
+                    _openGlobalSessionLoading.value = false
+                    _activeWorkspace.value = it.worktree
+                    _fileTree.value = emptyList()
+                    _activeSessionId.value = it.id
+                }
                 "PERMISSION_REQUEST" -> frame.decodePayload<PermissionRequestDto>(json)?.let {
                     _pendingPermission.value = it
                     runLog.permissionRequested(it.tool)
@@ -311,6 +359,20 @@ class RemoteSessionManager(
                     val msg = frame.decodePayload<ErrorPayload>(json)?.message ?: "Unknown error"
                     _lastError.value = BridgeError(++errorSeq, msg, clock())
                     Log.e("RemoteSessionManager", "Server sent error: $msg")
+                    // FETCH_ALL_SESSIONS/OPEN_SESSION_GLOBAL failures arrive as a
+                    // generic ERROR frame (no eventType correlation on the wire),
+                    // so any ERROR while a global-sessions request was in flight is
+                    // attributed to it — surfaced via allSessionsError instead of
+                    // only the generic lastError, since the dedicated screen needs
+                    // an inline message, not a toast-style one-shot.
+                    if (_allSessionsLoading.value) {
+                        _allSessionsLoading.value = false
+                        _allSessionsError.value = msg
+                    }
+                    if (_openGlobalSessionLoading.value) {
+                        _openGlobalSessionLoading.value = false
+                        _openGlobalSessionError.value = msg
+                    }
                 }
             }
         } catch (e: Exception) {
@@ -396,6 +458,27 @@ class RemoteSessionManager(
     }
 
     fun forkSession(sessionId: String) = sendString("FORK_SESSION", sessionId)
+
+    /** ADR-0002: fetches the global, cross-workspace session list, read
+     *  directly from OpenCode's own on-disk session database — independent
+     *  of [activeWorkspace]. Pass `cursor` (from [allSessionsNextCursor]) to
+     *  fetch the next page; response replaces [allSessions] wholesale, it is
+     *  not appended automatically. */
+    fun fetchAllSessions(cursor: String? = null) {
+        _allSessionsLoading.value = true
+        _allSessionsError.value = null
+        sendRaw("FETCH_ALL_SESSIONS", json.encodeToJsonElement(FetchAllSessionsPayload(cursor = cursor)))
+    }
+
+    /** ADR-0002: opens a session found via [fetchAllSessions], switching
+     *  [activeWorkspace] to `worktree` (which may differ from the current
+     *  one) and restarting the bridge's opencode-serve process bound there —
+     *  not instant, hence [openGlobalSessionLoading]. */
+    fun openGlobalSession(id: String, worktree: String) {
+        _openGlobalSessionLoading.value = true
+        _openGlobalSessionError.value = null
+        sendRaw("OPEN_SESSION_GLOBAL", json.encodeToJsonElement(OpenSessionGlobalPayload(id, worktree)))
+    }
 
     fun runTerminal(command: String) {
         terminal.appendCommand(command)

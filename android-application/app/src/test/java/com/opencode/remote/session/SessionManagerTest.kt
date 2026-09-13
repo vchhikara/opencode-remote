@@ -53,6 +53,12 @@ class SessionManagerTest {
         assertEquals(null, manager.activeSessionId.value)
         assertTrue(manager.tasks.value.isEmpty())
         assertEquals(null, manager.gitStatus.value)
+        assertTrue(manager.allSessions.value.isEmpty())
+        assertEquals(null, manager.allSessionsNextCursor.value)
+        assertEquals(null, manager.allSessionsError.value)
+        assertEquals(false, manager.allSessionsLoading.value)
+        assertEquals(false, manager.openGlobalSessionLoading.value)
+        assertEquals(null, manager.openGlobalSessionError.value)
     }
 
     private suspend fun simulateIncomingMessage(frame: WebSocketFrame) {
@@ -245,6 +251,75 @@ class SessionManagerTest {
 
         simulateIncomingMessage(createFrame("SESSION_SWITCHED", SessionSwitchedDto("s2"), json))
         assertEquals("s2", manager.activeSessionId.value)
+    }
+
+    @Test
+    fun testAllSessionsListEvent() = testScope.runTest {
+        // Matches bridge/sessionStore.js's actual ALL_SESSIONS_LIST shape
+        // (verified against bridge/test/globalSessions.test.js) — an object
+        // with `sessions`/`nextCursor`, not a bare list, and each session
+        // carries worktree/reachable, not just id/title/updatedAt like the
+        // workspace-scoped SessionDto.
+        assertTrue(manager.allSessions.value.isEmpty())
+        val sessions = listOf(
+            GlobalSessionDto("s1", "First", "/proj-a", 200L, reachable = true),
+            GlobalSessionDto("s2", "Second", "/proj-b/gone", 100L, reachable = false)
+        )
+        simulateIncomingMessage(createFrame("ALL_SESSIONS_LIST", AllSessionsListDto(sessions, nextCursor = "cursor123"), json))
+        assertEquals(sessions, manager.allSessions.value)
+        assertEquals("cursor123", manager.allSessionsNextCursor.value)
+        assertEquals(false, manager.allSessionsLoading.value)
+    }
+
+    @Test
+    fun testAllSessionsListWithoutNextCursorMeansNoMorePages() = testScope.runTest {
+        val sessions = listOf(GlobalSessionDto("s1", "Only", "/proj-a", 100L, reachable = true))
+        simulateIncomingMessage(createFrame("ALL_SESSIONS_LIST", AllSessionsListDto(sessions, nextCursor = null), json))
+        assertEquals(null, manager.allSessionsNextCursor.value)
+    }
+
+    @Test
+    fun testFetchAllSessionsSetsLoadingUntilResponseArrives() = testScope.runTest {
+        manager.fetchAllSessions()
+        assertEquals(true, manager.allSessionsLoading.value)
+        simulateIncomingMessage(createFrame("ALL_SESSIONS_LIST", AllSessionsListDto(emptyList()), json))
+        assertEquals(false, manager.allSessionsLoading.value)
+    }
+
+    @Test
+    fun testSessionOpenedClearsStaleFileTreeAndUpdatesWorkspaceAndSession() = testScope.runTest {
+        // Mirrors testWorkspaceOpenedClearsStaleFileTree — SESSION_OPENED
+        // (OPEN_SESSION_GLOBAL's reply) changes activeWorkspace just like
+        // WORKSPACE_OPENED does, so it must clear the same stale file tree,
+        // plus update activeSessionId like SESSION_SWITCHED does.
+        val children = listOf(FileNodeDto("file.txt", "/file.txt", false))
+        simulateIncomingMessage(createFrame("FILE_TREE", FileNodeDto("workspace", "", true, children), json))
+        assertEquals(children, manager.fileTree.value)
+
+        manager.openGlobalSession("s9", "/other/project")
+        assertEquals(true, manager.openGlobalSessionLoading.value)
+
+        simulateIncomingMessage(createFrame("SESSION_OPENED", SessionOpenedDto("s9", "/other/project"), json))
+        assertEquals(emptyList<FileNodeDto>(), manager.fileTree.value)
+        assertEquals("/other/project", manager.activeWorkspace.value)
+        assertEquals("s9", manager.activeSessionId.value)
+        assertEquals(false, manager.openGlobalSessionLoading.value)
+    }
+
+    @Test
+    fun testErrorWhileFetchingAllSessionsSurfacesAllSessionsError() = testScope.runTest {
+        manager.fetchAllSessions()
+        simulateIncomingMessage(createFrame("ERROR", ErrorPayload("FETCH_ALL_SESSIONS failed: db missing"), json))
+        assertEquals(false, manager.allSessionsLoading.value)
+        assertEquals("FETCH_ALL_SESSIONS failed: db missing", manager.allSessionsError.value)
+    }
+
+    @Test
+    fun testErrorWhileOpeningGlobalSessionSurfacesOpenGlobalSessionError() = testScope.runTest {
+        manager.openGlobalSession("s1", "/gone")
+        simulateIncomingMessage(createFrame("ERROR", ErrorPayload("Workspace not found: /gone"), json))
+        assertEquals(false, manager.openGlobalSessionLoading.value)
+        assertEquals("Workspace not found: /gone", manager.openGlobalSessionError.value)
     }
 
     @Test

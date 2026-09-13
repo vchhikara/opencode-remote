@@ -34,9 +34,12 @@ import com.opencode.remote.ui.state.Formatting
 import com.opencode.remote.ui.theme.Oc
 import com.opencode.remote.ui.theme.OcType
 
-/** opencode sessions from SESSION_LIST: switch, fork, or start a new one. */
+/** opencode sessions from SESSION_LIST: switch, fork, or start a new one.
+ *  Scoped to the currently active workspace only — see [GlobalSessionsScreen]
+ *  (ADR-0002) for every session across every workspace, reached via the
+ *  "All workspaces" header action below. */
 @Composable
-fun SessionsScreen(sessionManager: RemoteSessionManager, onOpened: () -> Unit) {
+fun SessionsScreen(sessionManager: RemoteSessionManager, onOpened: () -> Unit, onOpenAllWorkspaces: () -> Unit) {
     val sessions by sessionManager.sessions.collectAsStateWithLifecycle()
     val activeId by sessionManager.activeSessionId.collectAsStateWithLifecycle()
 
@@ -44,6 +47,7 @@ fun SessionsScreen(sessionManager: RemoteSessionManager, onOpened: () -> Unit) {
 
     Column(Modifier.fillMaxSize()) {
         ScreenHeader("Sessions") {
+            HeaderAction("All workspaces", onClick = onOpenAllWorkspaces)
             HeaderAction("New", onClick = {
                 sessionManager.newSession()
                 onOpened()
