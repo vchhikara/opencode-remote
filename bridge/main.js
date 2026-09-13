@@ -6,6 +6,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const QRCode = require('qrcode');
+const { listAllSessions } = require('./sessionStore');
 
 const PORT = parseInt(process.argv[2] || process.env.PORT || '8080', 10);
 const OPCODE = process.env.OPCODE || 'opencode';
@@ -98,6 +99,20 @@ function makeWorkspaceEntry(p) {
   return { id: p, name: path.basename(p), path: p };
 }
 let workspaces = [makeWorkspaceEntry(activeWorkspace)];
+
+// Shared by OPEN_WORKSPACE, ADD_WORKSPACE, and OPEN_SESSION_GLOBAL — each
+// previously carried (or, for OPEN_SESSION_GLOBAL, would have carried) its
+// own inline copy of "resolve this path, confirm it's inside WORKSPACE_ROOT,
+// confirm it's an existing directory". Returns { resolved } on success or
+// { error } (a user-facing message, not a thrown exception) on failure.
+function resolveWithinWorkspaceRoot(dir) {
+  const resolved = path.resolve(dir);
+  const rootResolved = path.resolve(WORKSPACE_ROOT);
+  const inRoot = resolved === rootResolved || resolved.startsWith(rootResolved + path.sep);
+  if (!inRoot) return { error: `Workspace outside allowed root: ${dir}` };
+  if (!(fs.existsSync(resolved) && fs.statSync(resolved).isDirectory())) return { error: `Workspace not found: ${dir}` };
+  return { resolved };
+}
 
 // --- OpenCode server (persistent, one session reused across prompts) ---
 // Previously every PROMPT spawned a fresh `opencode run` subprocess with no
@@ -653,19 +668,15 @@ wss.on('connection', (ws, req) => {
       case 'OPEN_WORKSPACE': {
         const dir = String(payload);
         try {
-          const resolved = path.resolve(dir);
-          const rootResolved = path.resolve(WORKSPACE_ROOT);
-          const inRoot = resolved === rootResolved || resolved.startsWith(rootResolved + path.sep);
-          if (!inRoot) {
-            ws.send(JSON.stringify({ eventType: 'ERROR', payload: { message: `Workspace outside allowed root: ${dir}` } }));
-          } else if (fs.existsSync(resolved) && fs.statSync(resolved).isDirectory()) {
+          const { resolved, error } = resolveWithinWorkspaceRoot(dir);
+          if (error) {
+            ws.send(JSON.stringify({ eventType: 'ERROR', payload: { message: error } }));
+          } else {
             activeWorkspace = resolved;
             if (!workspaces.some(w => w.path === resolved)) workspaces.push(makeWorkspaceEntry(resolved));
             if (ocServeProc) startOpenCodeServer(); // already running -> restart bound to the new dir
             ws.send(JSON.stringify({ eventType: 'WORKSPACE_OPENED', payload: { path: resolved } }));
             broadcast('WORKSPACE_LIST', workspaces);
-          } else {
-            ws.send(JSON.stringify({ eventType: 'ERROR', payload: { message: `Workspace not found: ${dir}` } }));
           }
         } catch (e) {
           ws.send(JSON.stringify({ eventType: 'ERROR', payload: { message: e.message } }));
@@ -678,16 +689,12 @@ wss.on('connection', (ws, req) => {
         // shouldn't interrupt whatever is currently open.
         const dir = String(payload);
         try {
-          const resolved = path.resolve(dir);
-          const rootResolved = path.resolve(WORKSPACE_ROOT);
-          const inRoot = resolved === rootResolved || resolved.startsWith(rootResolved + path.sep);
-          if (!inRoot) {
-            ws.send(JSON.stringify({ eventType: 'ERROR', payload: { message: `Workspace outside allowed root: ${dir}` } }));
-          } else if (fs.existsSync(resolved) && fs.statSync(resolved).isDirectory()) {
+          const { resolved, error } = resolveWithinWorkspaceRoot(dir);
+          if (error) {
+            ws.send(JSON.stringify({ eventType: 'ERROR', payload: { message: error } }));
+          } else {
             if (!workspaces.some(w => w.path === resolved)) workspaces.push(makeWorkspaceEntry(resolved));
             broadcast('WORKSPACE_LIST', workspaces);
-          } else {
-            ws.send(JSON.stringify({ eventType: 'ERROR', payload: { message: `Workspace not found: ${dir}` } }));
           }
         } catch (e) {
           ws.send(JSON.stringify({ eventType: 'ERROR', payload: { message: e.message } }));
@@ -763,6 +770,62 @@ wss.on('connection', (ws, req) => {
             ws.send(JSON.stringify({ eventType: 'SESSION_SWITCHED', payload: { id: targetId } }));
           } catch (e) {
             ws.send(JSON.stringify({ eventType: 'ERROR', payload: { message: `SWITCH_SESSION failed: ${e.message}` } }));
+          }
+        })();
+        break;
+      }
+      case 'FETCH_ALL_SESSIONS': {
+        // Global, cross-workspace session list — read directly from
+        // OpenCode's own on-disk DB (sessionStore.js), independent of
+        // activeWorkspace or whether opencode serve is even running. See
+        // adr/0002-global-cross-workspace-session-search.md.
+        try {
+          const opts = (payload && typeof payload === 'object') ? payload : {};
+          const result = listAllSessions({ limit: opts.limit, cursor: opts.cursor });
+          ws.send(JSON.stringify({ eventType: 'ALL_SESSIONS_LIST', payload: result }));
+        } catch (e) {
+          ws.send(JSON.stringify({ eventType: 'ERROR', payload: { message: `FETCH_ALL_SESSIONS failed: ${e.message}` } }));
+        }
+        break;
+      }
+      case 'OPEN_SESSION_GLOBAL': {
+        // Opens a session found via FETCH_ALL_SESSIONS, which may belong to
+        // a workspace other than activeWorkspace (or one opencode serve
+        // isn't currently bound to at all). Reuses OPEN_WORKSPACE's and
+        // SWITCH_SESSION's exact machinery rather than inventing a new
+        // session-opening path — see adr/0002-....md, step list under
+        // "Selecting a session from the global list".
+        const id = payload && payload.id;
+        const worktree = payload && payload.worktree;
+        (async () => {
+          try {
+            if (!id || !worktree) {
+              ws.send(JSON.stringify({ eventType: 'ERROR', payload: { message: 'OPEN_SESSION_GLOBAL requires both id and worktree' } }));
+              return;
+            }
+            const { resolved, error } = resolveWithinWorkspaceRoot(worktree);
+            if (error) {
+              ws.send(JSON.stringify({ eventType: 'ERROR', payload: { message: error } }));
+              return;
+            }
+            activeWorkspace = resolved;
+            if (!workspaces.some(w => w.path === resolved)) workspaces.push(makeWorkspaceEntry(resolved));
+            // Unlike OPEN_WORKSPACE (which only restarts an already-running
+            // serve, since switching workspace alone doesn't require one),
+            // this frame is about to validate and use a specific session id
+            // against opencode serve, so it must (re)start it bound to the
+            // target dir unconditionally — whether or not one was already
+            // running, and whether or not it was already bound here.
+            startOpenCodeServer();
+            await ocReadyPromise;
+            const res = await ocFetch(`/session/${id}`);
+            if (!res.ok) throw new Error(`session not found (${res.status})`);
+            ocSessionId = id;
+            persistSessionId();
+            ws.send(JSON.stringify({ eventType: 'SESSION_OPENED', payload: { id, worktree: resolved } }));
+            broadcast('WORKSPACE_LIST', workspaces);
+          } catch (e) {
+            ws.send(JSON.stringify({ eventType: 'ERROR', payload: { message: `OPEN_SESSION_GLOBAL failed: ${e.message}` } }));
           }
         })();
         break;

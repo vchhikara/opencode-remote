@@ -86,6 +86,18 @@ Replies `SESSION_SWITCHED` or `ERROR`.
 ```
 Bare string session id to fork from. Replies `SESSION_SWITCHED` (with the new forked session's id) or `ERROR`.
 
+### `FETCH_ALL_SESSIONS`
+```json
+{ "eventType": "FETCH_ALL_SESSIONS", "payload": { "limit": 50, "cursor": "opaque string, optional" } }
+```
+Global, cross-workspace session list — read directly from OpenCode's own on-disk session database (`~/.local/share/opencode/opencode.db`), independent of `activeWorkspace` and of whether `opencode serve` is even running. `payload` is optional; both fields default (`limit` to 50, capped at 200). Replies `ALL_SESSIONS_LIST` or `ERROR` (e.g. the database is missing/unreadable). See `adr/0002-global-cross-workspace-session-search.md`.
+
+### `OPEN_SESSION_GLOBAL`
+```json
+{ "eventType": "OPEN_SESSION_GLOBAL", "payload": { "id": "sessionId", "worktree": "/absolute/path" } }
+```
+Opens a session found via `FETCH_ALL_SESSIONS`, which may belong to a workspace other than the currently-active one. Same path-confinement rule as `OPEN_WORKSPACE` (rejects a `worktree` outside `WORKSPACE_ROOT` or that doesn't exist). On success: switches `activeWorkspace` to `worktree`, registers it in the workspace list if new, restarts `opencode serve` bound there, and switches to the given session id — replies `SESSION_OPENED` and broadcasts `WORKSPACE_LIST`. Replies `ERROR` if the worktree is invalid or the session id isn't found once bound to it.
+
 ### `KILL_TASK`
 ```json
 { "eventType": "KILL_TASK", "payload": "taskId" }
@@ -255,6 +267,23 @@ Array of `{ "id": "string", "title": "string|null", "updatedAt": "number|null" }
 { "id": "string" }
 ```
 Sent for `NEW_SESSION`, `SWITCH_SESSION`, and `FORK_SESSION`.
+
+### `ALL_SESSIONS_LIST`
+```json
+{
+  "sessions": [
+    { "id": "string", "title": "string", "worktree": "/absolute/path", "updatedAt": "number", "reachable": "boolean" }
+  ],
+  "nextCursor": "opaque string, present only if more rows exist"
+}
+```
+Reply to `FETCH_ALL_SESSIONS`, sorted most-recently-updated first. `reachable` reflects whether `worktree` currently exists on disk as a directory — an unreachable session is still included, never silently dropped.
+
+### `SESSION_OPENED`
+```json
+{ "id": "string", "worktree": "/absolute/path" }
+```
+Reply to `OPEN_SESSION_GLOBAL`.
 
 ### `NOTIFY`
 ```json

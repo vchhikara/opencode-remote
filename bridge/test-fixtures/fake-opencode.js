@@ -17,6 +17,35 @@ const port = portIdx !== -1 ? parseInt(args[portIdx + 1], 10) : 4096;
 let sessionCounter = 0;
 const knownSessions = new Set(); // ids ever returned by POST /session, for GET /session/:id existence checks
 
+// Optional cross-restart persistence, opt-in via env var. The bridge kills
+// and respawns this fixture as a subprocess whenever it (re)binds
+// opencode-serve to a different workspace directory (see
+// startOpenCodeServer() in main.js) — the real `opencode serve` reloads
+// session state from its own on-disk storage across such a restart, but
+// this in-memory fixture doesn't by default, which is right for every
+// existing test (they never exercise a serve restart mid-test) but wrong
+// for a test that specifically does (see globalSessions.test.js). Setting
+// FAKE_OPENCODE_STATE_FILE makes this instance load/save knownSessions
+// there instead of starting empty every time.
+const stateFilePath = process.env.FAKE_OPENCODE_STATE_FILE;
+if (stateFilePath) {
+  try {
+    const fs = require('fs');
+    const saved = JSON.parse(fs.readFileSync(stateFilePath, 'utf-8'));
+    for (const id of saved) knownSessions.add(id);
+  } catch {
+    // No state yet (first run) — start empty, same as the non-persisted default.
+  }
+}
+function persistKnownSessions() {
+  if (!stateFilePath) return;
+  try {
+    require('fs').writeFileSync(stateFilePath, JSON.stringify([...knownSessions]));
+  } catch {
+    // Best-effort; a failed persist just means the next restart starts fresh.
+  }
+}
+
 let ptyCounter = 0;
 const knownPtys = new Map(); // id -> { size: {rows, cols} | null }
 
@@ -85,6 +114,7 @@ function dispatch(req, res, url, body) {
     sessionCounter++;
     const id = `ses_fake_${sessionCounter}`;
     knownSessions.add(id);
+    persistKnownSessions();
     res.writeHead(200, { 'content-type': 'application/json' });
     res.end(JSON.stringify({ id }));
     return;
@@ -121,6 +151,7 @@ function dispatch(req, res, url, body) {
     sessionCounter++;
     const id = `ses_fake_${sessionCounter}`;
     knownSessions.add(id);
+    persistKnownSessions();
     res.writeHead(200, { 'content-type': 'application/json' });
     res.end(JSON.stringify({ id }));
     return;
