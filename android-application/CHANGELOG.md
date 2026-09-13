@@ -20,6 +20,7 @@ needed: `git tag v0.1.0 ccfd999`, etc.)
 | 0.5.0   | 5            | 2026-09-11 | `d6047d5`                           | Settings content: `NOTIFY`-frame notifications, emergency kill switch, true-black OLED theme, diagnostic trace toggle |
 | 0.6.0   | 6            | 2026-09-11 | `eaa726f`                           | CI: Play Store compliance audit, native `.so` stripping check, OWASP dependency CVE scan |
 | 0.7.0   | 7            | 2026-09-11 | (current, uncommitted at time of writing) | Release-readiness process checklist pass (Phase 4); this version-tracking scheme itself |
+| 0.7.1   | 8            | 2026-09-13 | `91f1dba`                           | Bugfix: Files screen never populated — `FILE_TREE` decoded as `List` instead of a single root node, silently swallowed by `decodePayload`'s catch-all. Fixed decode shape, added workspace-switch cache clear, removed dead `pushFileTree()` |
 
 ## Scheme notes
 
