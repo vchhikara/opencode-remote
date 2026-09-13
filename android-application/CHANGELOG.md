@@ -21,6 +21,7 @@ needed: `git tag v0.1.0 ccfd999`, etc.)
 | 0.6.0   | 6            | 2026-09-11 | `eaa726f`                           | CI: Play Store compliance audit, native `.so` stripping check, OWASP dependency CVE scan |
 | 0.7.0   | 7            | 2026-09-11 | (current, uncommitted at time of writing) | Release-readiness process checklist pass (Phase 4); this version-tracking scheme itself |
 | 0.7.1   | 8            | 2026-09-13 | `91f1dba`                           | Bugfix: Files screen never populated — `FILE_TREE` decoded as `List` instead of a single root node, silently swallowed by `decodePayload`'s catch-all. Fixed decode shape, added workspace-switch cache clear, removed dead `pushFileTree()` |
+| 0.8.0   | 9            | 2026-09-14 | `4760ac4`, `888fc27`                | Global cross-workspace session search (ADR-0002): bridge reads OpenCode's own `opencode.db` directly (read-only, `node:sqlite`) for a session list spanning every workspace, not just the active one, including sessions created via the OpenCode CLI directly; new `FETCH_ALL_SESSIONS`/`OPEN_SESSION_GLOBAL` frames; new "All workspaces" screen |
 
 ## Scheme notes
 

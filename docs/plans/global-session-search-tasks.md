@@ -66,9 +66,9 @@ Each phase should end in a committable, working state. Do not start a phase's su
 ## Phase 5 — Integration verification & release
 
 - [ ] 5.1 Full manual pass on a real device against the real bridge + real `opencode.db`: global list loads, an unreachable session is shown disabled, opening a session from a different workspace correctly restarts `opencode serve` and switches history, opening a session already in the active workspace is a fast no-op.
-- [ ] 5.2 Re-run full bridge (`node --test`) and Android (`./gradlew test`) suites together, confirm no regressions in existing Files/Sessions/Workspace tests.
-- [ ] 5.3 Update `android-application/CHANGELOG.md` with a new MINOR version row (new capability, not a bugfix — per the versioning scheme in that file) and bump `versionCode`/`versionName` in `app/build.gradle.kts` accordingly.
-- [ ] 5.4 Update `bridge/README.md` / `bridge/API.md` if Phase 2's doc update didn't already cover the end-user-facing description of the feature.
+- [x] 5.2 Re-run full bridge (`node --test`) and Android (`./gradlew test`) suites together, confirm no regressions in existing Files/Sessions/Workspace tests.
+- [x] 5.3 Update `android-application/CHANGELOG.md` with a new MINOR version row (new capability, not a bugfix — per the versioning scheme in that file) and bump `versionCode`/`versionName` in `app/build.gradle.kts` accordingly.
+- [x] 5.4 Update `bridge/README.md` / `bridge/API.md` if Phase 2's doc update didn't already cover the end-user-facing description of the feature.
 
 **Exit criteria:** both test suites green, CHANGELOG entry present, version bumped, manual on-device verification evidence captured (screenshot or description) before calling this done.
 
