@@ -116,9 +116,23 @@ class SessionManagerTest {
 
     @Test
     fun testFileTreeEvent() = testScope.runTest {
-        val fileTree = listOf(FileNodeDto("file.txt", "/file.txt", false))
-        simulateIncomingMessage(createFrame("FILE_TREE", fileTree, json))
-        assertEquals(fileTree, manager.fileTree.value)
+        // The bridge sends one root FileNodeDto (see bridge/main.js FETCH_FILE_TREE),
+        // not a bare list — the client unwraps it to the root's children.
+        val children = listOf(FileNodeDto("file.txt", "/file.txt", false))
+        val root = FileNodeDto("workspace", "", true, children)
+        simulateIncomingMessage(createFrame("FILE_TREE", root, json))
+        assertEquals(children, manager.fileTree.value)
+    }
+
+    @Test
+    fun testWorkspaceOpenedClearsStaleFileTree() = testScope.runTest {
+        val children = listOf(FileNodeDto("file.txt", "/file.txt", false))
+        val root = FileNodeDto("workspace", "", true, children)
+        simulateIncomingMessage(createFrame("FILE_TREE", root, json))
+        assertEquals(children, manager.fileTree.value)
+
+        simulateIncomingMessage(createFrame("WORKSPACE_OPENED", OpenWorkspacePayload("/other"), json))
+        assertEquals(emptyList<FileNodeDto>(), manager.fileTree.value)
     }
 
     @Test

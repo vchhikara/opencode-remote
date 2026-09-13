@@ -232,7 +232,10 @@ class RemoteSessionManager(
             val frame = json.decodeFromString<WebSocketFrame>(text)
             when (frame.eventType) {
                 "WORKSPACE_LIST" -> frame.decodePayload<List<WorkspaceDto>>(json)?.let { _workspaces.value = it }
-                "WORKSPACE_OPENED" -> frame.decodePayload<OpenWorkspacePayload>(json)?.let { _activeWorkspace.value = it.path }
+                "WORKSPACE_OPENED" -> frame.decodePayload<OpenWorkspacePayload>(json)?.let {
+                    _activeWorkspace.value = it.path
+                    _fileTree.value = emptyList() // stale tree belongs to the old workspace; re-fetch on next Files visit
+                }
                 "CHAT_MESSAGE" -> frame.decodePayload<BridgeChatMessageDto>(json)?.let { msg ->
                     val turnTools = _streamingMessage.value?.toolSteps.orEmpty()
                     _chatMessages.update { it + msg.toUi().copy(tools = turnTools) }
@@ -276,7 +279,10 @@ class RemoteSessionManager(
                     if (it.equals("Idle", ignoreCase = true)) _streamingMessage.value = null
                     runLog.agentState(it)
                 }
-                "FILE_TREE" -> frame.decodePayload<List<FileNodeDto>>(json)?.let { _fileTree.value = it }
+                // Bridge sends one root FileNodeDto (see bridge/main.js FETCH_FILE_TREE), not
+                // a list — the explorer renders the workspace's children flat, without a
+                // wrapping root row (see flattenTree in FileTreeRows.kt).
+                "FILE_TREE" -> frame.decodePayload<FileNodeDto>(json)?.let { _fileTree.value = it.children ?: emptyList() }
                 "FILE_CONTENT" -> frame.decodePayload<String>(json)?.let { content ->
                     _fileContent.value = FileContentDto(path = pendingFileRequestPath ?: "", content = content)
                 }

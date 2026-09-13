@@ -166,33 +166,6 @@ function broadcast(eventType, payload) {
   }
 }
 
-function pushFileTree(dir) {
-  function walk(d, rel) {
-    const entries = fs.readdirSync(d, { withFileTypes: true });
-    const children = [];
-    for (const e of entries) {
-      if (e.name.startsWith('.') || e.name === 'node_modules') continue;
-      const full = path.join(d, e.name);
-      const rp = rel ? `${rel}/${e.name}` : e.name;
-      try {
-        if (e.isDirectory()) {
-          children.push({ id: rp, name: e.name, isFolder: true, children: walk(full, rp) });
-        } else {
-          const st = fs.statSync(full);
-          children.push({ id: rp, name: e.name, isFolder: false, size: st.size });
-        }
-      } catch {}
-    }
-    return children;
-  }
-  try {
-    const root = path.basename(dir);
-    broadcast({ type: 'FileTree', data: { id: 'root', name: root, isFolder: true, children: walk(dir, '') } });
-  } catch (e) {
-    broadcast({ type: 'FileTree', data: null, error: e.message });
-  }
-}
-
 function pushGitStatus(ws) {
   const cwd = activeWorkspace;
   exec('git status --porcelain -b', { cwd }, (err, stdout) => {
