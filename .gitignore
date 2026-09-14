@@ -40,6 +40,12 @@ bridge/.opencode-remote-session.json
 bridge/.opencode-remote-audit.log
 bridge/.opencode-remote-devices.json
 bridge/.device-tokens.json
+# Same runtime state, written under android-application/ when the bridge
+# is run with that directory as its cwd (e.g. during manual device testing)
+android-application/.opencode-remote-session.json
+
+# Built debug/release APKs left at the repo root during manual install/testing
+/*.apk
 
 # Scratch content an opencode agent creates in a workspace during manual
 # testing, and manual-verification screenshots (not project deliverables)
@@ -53,3 +59,10 @@ bridge/.device-tokens.json
 /OpenCode Remote - Redesign.dc.html
 android-application/handoff-1.md
 android-application/Claude_RT_app_transcript_reconstructed.md
+
+# Notion sync canonical files (skill: notion-sync) - local source of truth,
+# never committed to GitHub per explicit instruction
+/spec.md
+/progress.md
+/ledger.md
+/.notion_sync_state.json
