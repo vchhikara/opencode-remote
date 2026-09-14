@@ -467,6 +467,12 @@ class RemoteSessionManager(
     fun fetchAllSessions(cursor: String? = null) {
         _allSessionsLoading.value = true
         _allSessionsError.value = null
+        // A fresh list fetch is the user starting over — an earlier
+        // OPEN_SESSION_GLOBAL failure must not keep GlobalSessionsScreen
+        // stuck on its error state forever (found via on-device testing:
+        // openGlobalSessionError otherwise never clears, so a screen that
+        // hit an open error stays on it even after a successful re-fetch).
+        _openGlobalSessionError.value = null
         sendRaw("FETCH_ALL_SESSIONS", json.encodeToJsonElement(FetchAllSessionsPayload(cursor = cursor)))
     }
 

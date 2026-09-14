@@ -323,6 +323,19 @@ class SessionManagerTest {
     }
 
     @Test
+    fun testFetchAllSessionsClearsAStaleOpenGlobalSessionError() = testScope.runTest {
+        // Found via on-device testing: without this, GlobalSessionsScreen
+        // stays stuck on "Couldn't open session" forever after one failed
+        // open, even once the user retries by re-fetching the list.
+        manager.openGlobalSession("s1", "/gone")
+        simulateIncomingMessage(createFrame("ERROR", ErrorPayload("Workspace not found: /gone"), json))
+        assertEquals("Workspace not found: /gone", manager.openGlobalSessionError.value)
+
+        manager.fetchAllSessions()
+        assertEquals(null, manager.openGlobalSessionError.value)
+    }
+
+    @Test
     fun testGitStatusEvent() = testScope.runTest {
         val gitStatus = GitStatusDto(branch = "main", modifiedFiles = listOf("a.kt"))
         simulateIncomingMessage(createFrame("GIT_STATUS", gitStatus, json))
