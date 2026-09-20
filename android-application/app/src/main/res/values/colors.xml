@@ -1,9 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- Launcher icon background. White, matching the icon artwork itself
-         (a black laptop/</> glyph on white) rather than the in-app Compose
-         theme colors in ui/theme/Color.kt, which are unrelated to this. -->
-    <color name="ic_launcher_background">#FFFFFF</color>
+    <!-- Launcher icon background, matching the icon artwork's own background
+         fill (#f9f9f9) rather than the in-app Compose theme colors in
+         ui/theme/Color.kt, which are unrelated to this. -->
+    <color name="ic_launcher_background">#F9F9F9</color>
     <!-- Launch window background; mirrors DarkOcColors.bg in ui/theme/Color.kt. -->
     <color name="oc_app_bg">#101214</color>
 </resources>
