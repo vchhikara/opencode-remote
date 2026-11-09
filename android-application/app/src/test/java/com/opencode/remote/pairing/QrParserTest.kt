@@ -55,6 +55,24 @@ class QrParserTest {
     }
 
     @Test
+    fun parsesSecureAndNonDefaultTransport() {
+        assertEquals(
+            QrResult("bridge.example.org", 443, "tok", "wss"),
+            parseQrResult("wss://bridge.example.org:443?token=tok")
+        )
+        assertEquals(
+            QrResult("10.0.0.7", 9443, "tok", "wss"),
+            parseQrResult("ip=10.0.0.7;port=9443;scheme=wss;key=tok")
+        )
+        assertEquals(
+            QrResult("host.example", 9090, "tok", "wss"),
+            parseQrResult("""{"host":"host.example","port":9090,"token":"tok","scheme":"wss"}""")
+        )
+        assertNull(parseQrResult("ip=10.0.0.7;port=99999;key=tok"))
+        assertNull(parseQrResult("ip=10.0.0.7;scheme=http;key=tok"))
+    }
+
+    @Test
     fun returnsNullForGarbage() {
         assertNull(parseQrResult("not a recognizable payload"))
     }

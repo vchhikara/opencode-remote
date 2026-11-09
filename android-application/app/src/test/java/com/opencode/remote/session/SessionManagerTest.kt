@@ -149,6 +149,46 @@ class SessionManagerTest {
     }
 
     @Test
+    fun testFileRepliesCarryTheirOwnRequestIdentity() = testScope.runTest {
+        val firstId = manager.fetchFile("a.txt")
+        val secondId = manager.fetchFile("b.txt")
+        simulateIncomingMessage(createFrame("FILE_CONTENT", BridgeFileContentDto("a.txt", firstId, "A"), json))
+        assertEquals(null, manager.fileContent.value)
+        simulateIncomingMessage(createFrame("FILE_CONTENT", BridgeFileContentDto("b.txt", secondId, "B"), json))
+        assertEquals(FileContentDto("b.txt", "B"), manager.fileContent.value)
+        simulateIncomingMessage(createFrame("FILE_CONTENT", BridgeFileContentDto("a.txt", firstId, "A"), json))
+        assertEquals(FileContentDto("b.txt", "B"), manager.fileContent.value)
+    }
+
+    @Test
+    fun testUnrelatedErrorsDoNotHijackGlobalSessionRequests() = testScope.runTest {
+        manager.fetchAllSessions()
+        simulateIncomingMessage(createFrame("ERROR", ErrorPayload("File not found", "FETCH_FILE", "file-id"), json))
+        assertEquals(true, manager.allSessionsLoading.value)
+        assertEquals(null, manager.allSessionsError.value)
+        simulateIncomingMessage(createFrame("ERROR", ErrorPayload("Fetch failed", "FETCH_ALL_SESSIONS"), json))
+        assertEquals(false, manager.allSessionsLoading.value)
+        assertEquals("Fetch failed", manager.allSessionsError.value)
+    }
+
+    @Test
+    fun testTaggedEventsFromUnselectedSessionAreIgnored() = testScope.runTest {
+        simulateIncomingMessage(createFrame("SESSION_SWITCHED", SessionSwitchedDto("s-current"), json))
+        simulateIncomingMessage(createFrame("STREAM_TEXT_DELTA",
+            StreamTextDeltaDto(sessionId = "s-other", text = "wrong session"), json))
+        assertEquals(null, manager.streamingMessage.value)
+        simulateIncomingMessage(createFrame("STREAM_TEXT_DELTA",
+            StreamTextDeltaDto(sessionId = "s-current", text = "correct session"), json))
+        assertEquals("correct session", manager.streamingMessage.value?.text)
+        simulateIncomingMessage(createFrame("PERMISSION_REQUEST",
+            PermissionRequestDto(permissionId = "p-other", sessionId = "s-other"), json))
+        assertEquals(null, manager.pendingPermission.value)
+        simulateIncomingMessage(createFrame("QUESTION_REQUEST",
+            QuestionRequestDto(questionId = "q-other", sessionId = "s-other"), json))
+        assertEquals(null, manager.pendingQuestion.value)
+    }
+
+    @Test
     fun testFileDiffIsMappedFromBridgeShape() = testScope.runTest {
         // Bridge's fileName/diffText map to filePath/patch.
         simulateIncomingMessage(createFrame("FILE_DIFF", BridgeFileDiffDto("pending_changes.diff", "patch text"), json))

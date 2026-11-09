@@ -8,7 +8,7 @@ import kotlinx.coroutines.flow.update
 
 enum class RunEventKind {
     Prompt, State, Tool, Permission, Decision, Question, Answer,
-    Diff, DiffKept, DiffReverted, Task, Git, Finished
+    Diff, DiffKept, DiffDismissed, Task, Git, Finished
 }
 
 /**
@@ -102,7 +102,7 @@ class RunLogRecorder(
 
     @Synchronized fun diffProposed(filePath: String) = record(RunEventKind.Diff, "Proposed changes", filePath)
     @Synchronized fun diffKept(filePath: String) = record(RunEventKind.DiffKept, "You kept the changes", filePath)
-    @Synchronized fun diffReverted(filePath: String) = record(RunEventKind.DiffReverted, "You reverted the changes", filePath)
+    @Synchronized fun diffDismissed(filePath: String) = record(RunEventKind.DiffDismissed, "You dismissed the review; files remain changed", filePath)
 
     @Synchronized fun task(task: TaskDto) {
         val previous = taskStatus.put(task.id, task.status)

@@ -9,8 +9,19 @@ const QRCode = require('qrcode');
 const { listAllSessions } = require('./sessionStore');
 
 const PORT = parseInt(process.argv[2] || process.env.PORT || '8080', 10);
+const BIND_HOST = process.env.BRIDGE_HOST || '0.0.0.0';
+const MAX_WS_PAYLOAD = 16 * 1024 * 1024;
+const MAX_CLIENTS = 64;
+const MAX_BUFFERED_BYTES = 8 * 1024 * 1024;
+const AUTH_TIMEOUT_MS = 10000;
 const OPCODE = process.env.OPCODE || 'opencode';
 const AUTH_TOKEN = process.env.BRIDGE_TOKEN || crypto.randomBytes(32).toString('hex');
+// Pairing credentials are usable only during startup's short window.
+// Additional devices require a bridge restart or an explicit multi-device cap.
+const PAIRING_WINDOW_MS = Math.min(300000, Math.max(0, Number(process.env.PAIRING_WINDOW_MS ?? 120000)));
+const PAIRING_MAX_DEVICES = Math.min(10, Math.max(0, Number(process.env.PAIRING_MAX_DEVICES ?? 1)));
+const pairingDeadline = Date.now() + PAIRING_WINDOW_MS;
+let pairingsRemaining = PAIRING_MAX_DEVICES;
 console.log(`  Auth token: ${AUTH_TOKEN}`);
 
 // --- Per-device tokens (Task 8.1) ---
@@ -24,26 +35,68 @@ console.log(`  Auth token: ${AUTH_TOKEN}`);
 const DEVICE_STORE_PATH = process.env.DEVICE_STORE_PATH || path.join(os.homedir(), '.opencode-remote-devices.json');
 let deviceTokens = loadDeviceTokens();
 
-function loadDeviceTokens() {
-  try {
-    return JSON.parse(fs.readFileSync(DEVICE_STORE_PATH, 'utf-8'));
-  } catch {
-    return {};
-  }
+// A SHA-256 verifier is stored instead of a reusable bearer token. Existing
+// plaintext-key stores are migrated in place without invalidating devices.
+function deviceTokenKey(token) {
+  return 'sha256:' + crypto.createHash('sha256').update(token).digest('hex');
 }
 
-function saveDeviceTokens() {
+function validDeviceRecord(token, record) {
+  return typeof token === 'string' && /^(?:sha256:)?[a-f0-9]{64}$/.test(token)
+    && record !== null && typeof record === 'object' && !Array.isArray(record)
+    && typeof record.deviceId === 'string'
+    && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(record.deviceId)
+    && typeof record.deviceName === 'string'
+    && typeof record.issuedAt === 'number' && Number.isSafeInteger(record.issuedAt)
+    && record.issuedAt > 0;
+}
+
+function loadDeviceTokens() {
+  const tokens = Object.create(null);
   try {
-    fs.writeFileSync(DEVICE_STORE_PATH, JSON.stringify(deviceTokens, null, 2));
+    const stored = JSON.parse(fs.readFileSync(DEVICE_STORE_PATH, 'utf-8'));
+    let migrated = false;
+    if (stored === null || typeof stored !== 'object' || Array.isArray(stored)) {
+      throw new Error('device store must be an object');
+    }
+    for (const [token, record] of Object.entries(stored)) {
+      if (validDeviceRecord(token, record)) {
+        if (token.startsWith('sha256:')) tokens[token] = record;
+        else {
+          tokens[deviceTokenKey(token)] = record;
+          migrated = true;
+        }
+      }
+    }
+    // Repair existing modes and atomically upgrade legacy plaintext token keys.
+    fs.chmodSync(DEVICE_STORE_PATH, 0o600);
+    if (migrated) persistDeviceTokens(tokens);
   } catch (e) {
-    console.log(`  ! failed to persist device tokens: ${e.message}`);
+    if (e.code !== 'ENOENT') {
+      // Fail closed on corrupt stores or permission errors, rather than issuing
+      // new credentials against an inconsistent persisted authorization state.
+      throw new Error(`Cannot safely load device store: ${e.message}`);
+    }
+  }
+  return tokens;
+}
+
+function persistDeviceTokens(tokens) {
+  const tmp = `${DEVICE_STORE_PATH}.${process.pid}.tmp`;
+  try {
+    fs.writeFileSync(tmp, JSON.stringify(tokens, null, 2), { mode: 0o600, flag: 'wx' });
+    fs.chmodSync(tmp, 0o600);
+    fs.renameSync(tmp, DEVICE_STORE_PATH);
+  } finally {
+    if (fs.existsSync(tmp)) fs.unlinkSync(tmp);
   }
 }
+function saveDeviceTokens() { persistDeviceTokens(deviceTokens); }
 
 function issueDeviceToken(deviceName) {
   const token = crypto.randomBytes(32).toString('hex');
   const deviceId = crypto.randomUUID();
-  deviceTokens[token] = { deviceId, deviceName, issuedAt: Date.now() };
+  deviceTokens[deviceTokenKey(token)] = { deviceId, deviceName, issuedAt: Date.now() };
   saveDeviceTokens();
   return { token, deviceId };
 }
@@ -77,7 +130,8 @@ function appendAuditLog(kind, detail, ws) {
     deviceName: (ws && ws.deviceName) || null
   };
   try {
-    fs.appendFileSync(AUDIT_LOG_PATH, JSON.stringify(entry) + '\n');
+    fs.appendFileSync(AUDIT_LOG_PATH, JSON.stringify(entry) + '\n', { mode: 0o600 });
+    fs.chmodSync(AUDIT_LOG_PATH, 0o600);
   } catch (e) {
     console.log(`  ! failed to append audit log: ${e.message}`);
   }
@@ -106,11 +160,13 @@ let workspaces = [makeWorkspaceEntry(activeWorkspace)];
 // confirm it's an existing directory". Returns { resolved } on success or
 // { error } (a user-facing message, not a thrown exception) on failure.
 function resolveWithinWorkspaceRoot(dir) {
-  const resolved = path.resolve(dir);
-  const rootResolved = path.resolve(WORKSPACE_ROOT);
+  const lexical = path.resolve(dir);
+  const rootResolved = fs.realpathSync(WORKSPACE_ROOT);
+  if (!fs.existsSync(lexical)) return { error: `Workspace not found: ${dir}` };
+  const resolved = fs.realpathSync(lexical);
   const inRoot = resolved === rootResolved || resolved.startsWith(rootResolved + path.sep);
   if (!inRoot) return { error: `Workspace outside allowed root: ${dir}` };
-  if (!(fs.existsSync(resolved) && fs.statSync(resolved).isDirectory())) return { error: `Workspace not found: ${dir}` };
+  if (!fs.statSync(resolved).isDirectory()) return { error: `Workspace not found: ${dir}` };
   return { resolved };
 }
 
@@ -156,11 +212,17 @@ function loadPersistedSessionId() {
 
 function resolveInsideWorkspace(p) {
   const abs = path.resolve(activeWorkspace, p);
-  const root = path.resolve(activeWorkspace);
+  const root = fs.realpathSync(activeWorkspace);
+  // Check the requested path and its canonical destination. A path under
+  // the workspace may be a symlink pointing outside the allowed tree.
   if (abs !== root && !abs.startsWith(root + path.sep)) {
     throw new Error('path escapes workspace');
   }
-  return abs;
+  const real = fs.realpathSync(abs);
+  if (real !== root && !real.startsWith(root + path.sep)) {
+    throw new Error('symlink escapes workspace');
+  }
+  return real;
 }
 
 function tokenizeGitArgs(s) {
@@ -177,7 +239,12 @@ function tokenizeGitArgs(s) {
 function broadcast(eventType, payload) {
   const msg = JSON.stringify({ eventType, payload });
   for (const ws of clients) {
-    if (ws.readyState === 1 && ws.authenticated) ws.send(msg);
+    if (ws.readyState !== 1 || !ws.authenticated) continue;
+    if (ws.bufferedAmount > MAX_BUFFERED_BYTES) {
+      ws.close(1013, 'slow consumer');
+      continue;
+    }
+    ws.send(msg);
   }
 }
 
@@ -563,7 +630,10 @@ function fileTreeToJson(dir, rootName) {
 }
 
 // --- WebSocket server ---
-const wss = new WebSocketServer({ port: PORT }, () => {
+const wss = new WebSocketServer({
+  host: BIND_HOST, port: PORT, path: '/ws',
+  maxPayload: MAX_WS_PAYLOAD, perMessageDeflate: false
+}, () => {
   const nets = os.networkInterfaces();
   const ips = [];
   for (const name of Object.keys(nets)) {
@@ -571,7 +641,7 @@ const wss = new WebSocketServer({ port: PORT }, () => {
       if (net.family === 'IPv4' && !net.internal) ips.push(net.address);
     }
   }
-  console.log(`\n  OpenCode Bridge listening on ws://0.0.0.0:${PORT}/ws`);
+  console.log(`\n  OpenCode Bridge listening on ws://${BIND_HOST}:${PORT}/ws`);
 
   // E1: advertise this bridge over mDNS so the Android client's NsdHelper can
   // discover it automatically instead of requiring manual IP/QR entry.
@@ -585,7 +655,7 @@ const wss = new WebSocketServer({ port: PORT }, () => {
 
   console.log(`  Companion app connect to:`);
   const printQr = (ip) => {
-    const qrString = `ip=${ip};key=${AUTH_TOKEN}`;
+    const qrString = `ip=${ip};port=${PORT};scheme=ws;key=${AUTH_TOKEN}`;
     console.log(`    ${ip}:${PORT}`);
     QRCode.toString(qrString, { type: 'terminal', small: true }, (err, qr) => {
       if (!err) console.log(qr);
@@ -600,8 +670,18 @@ const wss = new WebSocketServer({ port: PORT }, () => {
 });
 
 wss.on('connection', (ws, req) => {
+  if (clients.size >= MAX_CLIENTS) {
+    ws.close(1013, 'server busy');
+    return;
+  }
   clients.add(ws);
   ws.authenticated = false;
+  ws.isAlive = true;
+  ws.on('pong', () => { ws.isAlive = true; });
+  const authTimer = setTimeout(() => {
+    if (!ws.authenticated) ws.close(4001, 'authentication timeout');
+  }, AUTH_TIMEOUT_MS);
+  authTimer.unref();
   const clientAddr = req.socket.remoteAddress;
   console.log(`  Client connected: ${clientAddr}`);
 
@@ -613,19 +693,29 @@ wss.on('connection', (ws, req) => {
       ws.send(JSON.stringify({ eventType: 'ERROR', payload: { message: 'Malformed JSON frame' } }));
       return;
     }
+    if (!frame || typeof frame !== 'object' || Array.isArray(frame)) {
+      ws.close(1003, 'invalid frame');
+      return;
+    }
     const eventType = frame.eventType;
     const payload = frame.payload;
     console.log(`  < ${eventType}`);
 
     if (eventType === 'CONNECT') {
-      const deviceName = (payload && payload.deviceName) || 'unknown';
-      const suppliedToken = (payload && payload.token) || frame.token || '';
+      const deviceName = typeof payload?.deviceName === 'string'
+        ? payload.deviceName.slice(0, 100) : 'unknown';
+      const suppliedToken = payload?.token ?? frame.token ?? '';
 
       // Case 1: an already-issued per-device token (the normal reconnect path).
-      const existingDevice = deviceTokens[suppliedToken];
-      if (existingDevice) {
+      const lookupKey = typeof suppliedToken === 'string' && /^[a-f0-9]{64}$/.test(suppliedToken)
+        ? deviceTokenKey(suppliedToken) : null;
+      const existingDevice = lookupKey && Object.hasOwn(deviceTokens, lookupKey)
+        ? deviceTokens[lookupKey] : undefined;
+      if (lookupKey && validDeviceRecord(lookupKey, existingDevice)) {
         ws.authenticated = true;
+        clearTimeout(authTimer);
         ws.deviceToken = suppliedToken;
+        ws.deviceTokenKey = lookupKey;
         ws.deviceId = existingDevice.deviceId;
         ws.deviceName = existingDevice.deviceName || deviceName;
         sessions[suppliedToken] = { name: deviceName, workspace: activeWorkspace };
@@ -637,10 +727,14 @@ wss.on('connection', (ws, req) => {
 
       // Case 2: the one-time pairing secret -> issue and persist a fresh
       // per-device token, and tell the client to switch to it.
-      if (timingSafeTokenEquals(suppliedToken, AUTH_TOKEN)) {
+      if (typeof suppliedToken === 'string' && Date.now() < pairingDeadline
+          && pairingsRemaining > 0 && timingSafeTokenEquals(suppliedToken, AUTH_TOKEN)) {
         const { token, deviceId } = issueDeviceToken(deviceName);
+        pairingsRemaining -= 1;
         ws.authenticated = true;
+        clearTimeout(authTimer);
         ws.deviceToken = token;
+        ws.deviceTokenKey = deviceTokenKey(token);
         ws.deviceId = deviceId;
         ws.deviceName = deviceName;
         sessions[token] = { name: deviceName, workspace: activeWorkspace };
@@ -711,17 +805,34 @@ wss.on('connection', (ws, req) => {
         break;
       }
       case 'FETCH_FILE': {
-        const fp = String(payload);
+        // Legacy clients send a bare path; correlated requests include an id.
+        const structured = payload !== null && typeof payload === 'object' && !Array.isArray(payload);
+        const fp = structured ? payload.path : payload;
+        const requestId = structured ? payload.requestId : null;
+        const validRequest = !structured || (typeof requestId === 'string'
+          && requestId.length >= 1 && requestId.length <= 128);
+        const sendFileError = (message) => {
+          ws.send(JSON.stringify({
+            eventType: 'ERROR',
+            payload: { message, operation: 'FETCH_FILE',
+              ...(validRequest && structured ? { requestId } : {}) }
+          }));
+        };
+        if (!validRequest || typeof fp !== 'string') {
+          sendFileError('Invalid file request');
+          break;
+        }
         try {
           const fullPath = resolveInsideWorkspace(fp);
-          if (fs.existsSync(fullPath) && fs.statSync(fullPath).isFile()) {
+          if (fs.statSync(fullPath).isFile()) {
             const content = fs.readFileSync(fullPath, 'utf-8');
-            ws.send(JSON.stringify({ eventType: 'FILE_CONTENT', payload: content }));
+            const response = structured ? { requestId, path: fp, content } : content;
+            ws.send(JSON.stringify({ eventType: 'FILE_CONTENT', payload: response }));
           } else {
-            ws.send(JSON.stringify({ eventType: 'ERROR', payload: { message: `File not found: ${fp}` } }));
+            sendFileError(`File not found: ${fp}`);
           }
         } catch (e) {
-          ws.send(JSON.stringify({ eventType: 'ERROR', payload: { message: e.message } }));
+          sendFileError(e.message);
         }
         break;
       }
@@ -784,7 +895,7 @@ wss.on('connection', (ws, req) => {
           const result = listAllSessions({ limit: opts.limit, cursor: opts.cursor });
           ws.send(JSON.stringify({ eventType: 'ALL_SESSIONS_LIST', payload: result }));
         } catch (e) {
-          ws.send(JSON.stringify({ eventType: 'ERROR', payload: { message: `FETCH_ALL_SESSIONS failed: ${e.message}` } }));
+          ws.send(JSON.stringify({ eventType: 'ERROR', payload: { message: `FETCH_ALL_SESSIONS failed: ${e.message}`, operation: 'FETCH_ALL_SESSIONS' } }));
         }
         break;
       }
@@ -800,12 +911,12 @@ wss.on('connection', (ws, req) => {
         (async () => {
           try {
             if (!id || !worktree) {
-              ws.send(JSON.stringify({ eventType: 'ERROR', payload: { message: 'OPEN_SESSION_GLOBAL requires both id and worktree' } }));
+              ws.send(JSON.stringify({ eventType: 'ERROR', payload: { message: 'OPEN_SESSION_GLOBAL requires both id and worktree', operation: 'OPEN_SESSION_GLOBAL' } }));
               return;
             }
             const { resolved, error } = resolveWithinWorkspaceRoot(worktree);
             if (error) {
-              ws.send(JSON.stringify({ eventType: 'ERROR', payload: { message: error } }));
+              ws.send(JSON.stringify({ eventType: 'ERROR', payload: { message: error, operation: 'OPEN_SESSION_GLOBAL' } }));
               return;
             }
             activeWorkspace = resolved;
@@ -825,7 +936,7 @@ wss.on('connection', (ws, req) => {
             ws.send(JSON.stringify({ eventType: 'SESSION_OPENED', payload: { id, worktree: resolved } }));
             broadcast('WORKSPACE_LIST', workspaces);
           } catch (e) {
-            ws.send(JSON.stringify({ eventType: 'ERROR', payload: { message: `OPEN_SESSION_GLOBAL failed: ${e.message}` } }));
+            ws.send(JSON.stringify({ eventType: 'ERROR', payload: { message: `OPEN_SESSION_GLOBAL failed: ${e.message}`, operation: 'OPEN_SESSION_GLOBAL' } }));
           }
         })();
         break;
@@ -938,7 +1049,7 @@ wss.on('connection', (ws, req) => {
           delete deviceTokens[targetToken];
           saveDeviceTokens();
           for (const client of clients) {
-            if (client.deviceToken === targetToken) {
+            if (client.deviceTokenKey === targetToken) {
               client.authenticated = false;
               client.close(4001, 'revoked');
             }
@@ -1018,12 +1129,26 @@ wss.on('connection', (ws, req) => {
   });
 
   ws.on('close', () => {
+    clearTimeout(authTimer);
     clients.delete(ws);
     console.log(`  Client disconnected: ${clientAddr}`);
   });
 
   ws.on('error', () => clients.delete(ws));
 });
+
+const heartbeat = setInterval(() => {
+  for (const client of clients) {
+    if (!client.isAlive) {
+      client.terminate();
+      continue;
+    }
+    client.isAlive = false;
+    client.ping();
+  }
+}, 30000);
+heartbeat.unref();
+wss.on('close', () => clearInterval(heartbeat));
 
 process.on('SIGINT', () => {
   console.log('\n  Shutting down...');

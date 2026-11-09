@@ -108,7 +108,7 @@ fun MainShell(
     LaunchedEffect(issuedToken) {
         val fresh = issuedToken ?: return@LaunchedEffect
         tokenStorage.getLastCredentials()?.let { creds ->
-            tokenStorage.saveCredentials(creds.host, creds.port, fresh, creds.deviceName)
+            tokenStorage.saveCredentials(creds.host, creds.port, fresh, creds.deviceName, creds.scheme)
         }
     }
 

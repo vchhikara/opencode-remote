@@ -5,7 +5,7 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.intOrNull
 
-data class QrResult(val host: String, val port: Int, val token: String)
+data class QrResult(val host: String, val port: Int, val token: String, val scheme: String = "ws")
 
 private const val DEFAULT_PORT = 8080
 
@@ -36,7 +36,8 @@ fun parseQrResult(payload: String): QrResult? {
                     .mapNotNull { kv -> kv.split("=", limit = 2).takeIf { it.size == 2 } }
                     .firstOrNull { (k, _) -> k == "token" }
                     ?.get(1) ?: ""
-                QrResult(host, port, token)
+                if (port !in 1..65535) return null
+                QrResult(host, port, token, uri.scheme)
             }
             payload.startsWith("{") -> {
                 // kotlinx.serialization, not org.json: org.json is an Android SDK
@@ -47,7 +48,10 @@ fun parseQrResult(payload: String): QrResult? {
                 val host = obj["host"]?.jsonPrimitive?.content ?: return null
                 val port = obj["port"]?.jsonPrimitive?.intOrNull ?: DEFAULT_PORT
                 val token = obj["token"]?.jsonPrimitive?.content ?: ""
-                QrResult(host, port, token)
+                val scheme = obj["scheme"]?.jsonPrimitive?.content ?: "ws"
+                if (scheme != "ws" && scheme != "wss") return null
+                if (port !in 1..65535) return null
+                QrResult(host, port, token, scheme)
             }
             payload.startsWith("ip=") -> {
                 val fields = payload.split(";").associate { field ->
@@ -56,7 +60,11 @@ fun parseQrResult(payload: String): QrResult? {
                 }
                 val host = fields["ip"]?.takeIf { it.isNotBlank() } ?: return null
                 val token = fields["key"] ?: return null
-                QrResult(host, DEFAULT_PORT, token)
+                val port = fields["port"]?.toIntOrNull() ?: DEFAULT_PORT
+                val scheme = fields["scheme"] ?: "ws"
+                if (scheme != "ws" && scheme != "wss") return null
+                if (port !in 1..65535) return null
+                QrResult(host, port, token, scheme)
             }
             payload.contains("#") -> {
                 val parts = payload.split("#")
@@ -64,6 +72,7 @@ fun parseQrResult(payload: String): QrResult? {
                 val hostPort = parts[0].split(":")
                 val host = hostPort[0]
                 val port = if (hostPort.size > 1) hostPort[1].toIntOrNull() ?: DEFAULT_PORT else DEFAULT_PORT
+                if (port !in 1..65535) return null
                 QrResult(host, port, parts[1])
             }
             else -> null

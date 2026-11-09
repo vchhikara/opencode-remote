@@ -27,7 +27,11 @@ data class ConnectedPayload(
 )
 
 @Serializable
-data class ErrorPayload(val message: String)
+data class ErrorPayload(
+    val message: String,
+    val operation: String? = null,
+    val requestId: String? = null
+)
 
 @Serializable
 data class WorkspaceDto(val id: String, val name: String, val path: String)
@@ -87,8 +91,14 @@ data class FileNodeDto(
     val children: List<FileNodeDto>? = null
 )
 
-/** UI-facing file content. The bridge's FILE_CONTENT reply is a bare string with no
- *  path in it, so RemoteSessionManager pairs it with the path it just requested. */
+/** Correlated file-wire protocol. Legacy peers still exchange bare strings. */
+@Serializable
+data class FetchFileRequestDto(val path: String, val requestId: String)
+
+@Serializable
+data class BridgeFileContentDto(val path: String, val requestId: String, val content: String)
+
+/** UI-facing file content, retaining the identity supplied by the bridge. */
 data class FileContentDto(
     val path: String,
     val content: String

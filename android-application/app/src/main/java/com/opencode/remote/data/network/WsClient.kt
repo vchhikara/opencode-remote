@@ -3,6 +3,8 @@ package com.opencode.remote.data.network
 import android.util.Log
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.okhttp.OkHttp
+import io.ktor.http.URLProtocol
+import java.util.concurrent.TimeUnit
 import io.ktor.client.plugins.websocket.DefaultClientWebSocketSession
 import io.ktor.client.plugins.websocket.WebSockets
 import io.ktor.client.plugins.websocket.webSocket
@@ -33,7 +35,10 @@ sealed interface ConnectionState {
  */
 class WsClient(private val scope: CoroutineScope) {
     private val client = HttpClient(OkHttp) {
-        install(WebSockets) { pingIntervalMillis = 15000 }
+        install(WebSockets)
+        engine {
+            config { pingInterval(15, TimeUnit.SECONDS) }
+        }
     }
 
     private val _connectionState = MutableStateFlow<ConnectionState>(ConnectionState.Disconnected)
@@ -51,8 +56,10 @@ class WsClient(private val scope: CoroutineScope) {
     fun connect(
         host: String,
         port: Int,
+        scheme: String = "ws",
         onSession: suspend DefaultClientWebSocketSession.(markConnected: () -> Unit) -> Unit
     ) {
+        require(scheme == "ws" || scheme == "wss") { "Unsupported WebSocket scheme" }
         if (shouldSkipConnect(_connectionState.value)) return
         sessionJob?.cancel()
         sessionJob = scope.launch {
@@ -61,7 +68,9 @@ class WsClient(private val scope: CoroutineScope) {
             while (true) {
                 try {
                     _connectionState.value = if (attempt == 0) ConnectionState.Connecting else ConnectionState.Reconnecting(attempt, "Retrying")
-                    client.webSocket(host = host, port = port, path = "/ws") {
+                    client.webSocket(host = host, port = port, path = "/ws", request = {
+                        url.protocol = if (scheme == "wss") URLProtocol.WSS else URLProtocol.WS
+                    }) {
                         sendAction = { text -> send(Frame.Text(text)) }
                         onSession {
                             _connectionState.value = ConnectionState.Connected

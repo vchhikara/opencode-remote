@@ -51,6 +51,7 @@ fun PairingScreen(
     val context = LocalContext.current
     var host by remember { mutableStateOf("") }
     var port by remember { mutableStateOf("") }
+    var scheme by remember { mutableStateOf("ws") }
     var token by remember { mutableStateOf("") }
     var deviceName by remember { mutableStateOf(Build.MODEL) }
     var isScanning by remember { mutableStateOf(false) }
@@ -63,13 +64,14 @@ fun PairingScreen(
             port = it.port.toString()
             token = it.token
             deviceName = it.deviceName
+            scheme = it.scheme
         }
     }
 
     LaunchedEffect(connectionState) {
         if (connectionState is ConnectionState.Connected) {
             val p = port.toIntOrNull() ?: 8080
-            tokenStorage.saveCredentials(host, p, token, deviceName)
+            tokenStorage.saveCredentials(host, p, token, deviceName, scheme)
             onNavigateToWorkspaces()
         }
     }
@@ -81,6 +83,7 @@ fun PairingScreen(
                     host = it.host
                     port = it.port.toString()
                     token = it.token
+                    scheme = it.scheme
                 }
                 isScanning = false
             },
@@ -107,6 +110,7 @@ fun PairingScreen(
 
             PairingField("Host", host, { host = it }, "192.168.x.x", mono = true)
             PairingField("Port", port, { port = it }, "8080", mono = true, keyboardType = KeyboardType.Number)
+            PairingField("Transport (ws or wss)", scheme, { scheme = it.lowercase() }, "ws", mono = true)
             PairingField("Token", token, { token = it }, "pairing token", mono = true)
             PairingField("Device name", deviceName, { deviceName = it }, "This phone")
 
@@ -144,10 +148,10 @@ fun PairingScreen(
                     "Connect",
                     onClick = {
                         val p = port.toIntOrNull() ?: 8080
-                        sessionManager.connect(host, p, token, deviceName)
+                        sessionManager.connect(host, p, token, deviceName, scheme)
                     },
                     kind = OcButtonKind.Gold,
-                    enabled = host.isNotBlank() && token.isNotBlank(),
+                    enabled = host.isNotBlank() && token.isNotBlank() && scheme in setOf("ws", "wss") && (port.toIntOrNull() ?: 8080) in 1..65535,
                     height = 46.dp,
                     textStyle = OcType.buttonLargeStrong,
                     modifier = Modifier.weight(1f)
