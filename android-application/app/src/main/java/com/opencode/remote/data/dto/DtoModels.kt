@@ -260,7 +260,7 @@ data class GlobalSessionDto(
  *  FETCH_ALL_SESSIONS frame. Both fields optional on the wire; `limit`
  *  null lets the bridge apply its own default. */
 @Serializable
-data class FetchAllSessionsPayload(val limit: Int? = null, val cursor: String? = null)
+data class FetchAllSessionsPayload(val limit: Int? = null, val cursor: String? = null, val requestId: String? = null)
 
 /** Wire shape of the bridge's ALL_SESSIONS_LIST payload (main.js
  *  FETCH_ALL_SESSIONS reply) — `nextCursor` is present only when more rows
