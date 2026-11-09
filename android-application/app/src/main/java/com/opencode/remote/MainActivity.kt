@@ -25,6 +25,7 @@ import com.opencode.remote.data.network.RemoteSessionManager
 import com.opencode.remote.data.settings.SettingsPreferencesDataSource
 import com.opencode.remote.data.settings.SettingsRepositoryImpl
 import com.opencode.remote.data.storage.TokenStorage
+import com.opencode.remote.domain.model.UserSettings
 import com.opencode.remote.domain.repository.SettingsRepository
 import com.opencode.remote.notification.BridgeNotifier
 import com.opencode.remote.ui.components.ConnectionBanner
@@ -37,7 +38,6 @@ import com.opencode.remote.ui.theme.AppTheme
 import com.opencode.remote.ui.theme.animatedBackground
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.runBlocking
 
 class MainActivity : ComponentActivity() {
     private lateinit var tokenStorage: TokenStorage
@@ -60,14 +60,12 @@ class MainActivity : ComponentActivity() {
             produceFile = { applicationContext.preferencesDataStoreFile("user_settings.preferences_pb") }
         )
         settingsRepository = SettingsRepositoryImpl(SettingsPreferencesDataSource(settingsDataStore))
-        // One-time synchronous read of the small preferences file at cold start, so the
-        // first frame renders the saved theme instead of flashing the default — the same
-        // trade-off the old synchronous SharedPreferences-backed AppearanceStore made.
-        val initialSettings = runBlocking { settingsRepository.settingsFlow.first() }
+        // Never block the UI thread on DataStore disk I/O during cold start.
+        // Use the documented default until the lifecycle-aware flow emits persisted settings.
         val bridgeNotifier = BridgeNotifier(applicationContext)
 
         setContent {
-            val settings by settingsRepository.settingsFlow.collectAsStateWithLifecycle(initialValue = initialSettings)
+            val settings by settingsRepository.settingsFlow.collectAsStateWithLifecycle(initialValue = UserSettings())
             val appearance = settings.appearance
             sessionManager.traceEnabled = settings.diagnosticTraceEnabled
 
