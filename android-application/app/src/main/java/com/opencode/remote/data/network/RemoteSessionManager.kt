@@ -135,6 +135,7 @@ class RemoteSessionManager(
 
     private val _allSessionsLoading = MutableStateFlow(false)
     val allSessionsLoading: StateFlow<Boolean> = _allSessionsLoading.asStateFlow()
+    private var latestGlobalRequestId: String? = null
 
     // Tracks an in-flight OPEN_SESSION_GLOBAL separately from the fetch-list
     // loading/error state above — opening a session (which restarts opencode
@@ -203,6 +204,7 @@ class RemoteSessionManager(
     // Legacy server fallback. New replies carry path and requestId.
     private var pendingFileRequestPath: String? = null
     private var latestFileRequestId: String? = null
+    private var latestTreeRequestId: String? = null
 
     // Settings-gated raw frame trace, set by the caller (MainActivity, from
     // SettingsRepository) rather than read from DataStore in here — this class has
@@ -240,6 +242,8 @@ class RemoteSessionManager(
                             }
                             handshakeOk = true
                             markConnected()
+                            // The bridge returns a fresh snapshot of volatile state on every reconnect.
+                            send(Frame.Text(json.encodeToString(WebSocketFrame("FETCH_RUNTIME_STATE"))))
                         }
                         "ERROR" -> {
                             val err = wsFrame.decodePayload<ErrorPayload>(json)
@@ -264,12 +268,33 @@ class RemoteSessionManager(
 
     internal suspend fun handleIncomingMessage(text: String) {
         try {
-            if (traceEnabled) Log.d(TRACE_TAG, "<< $text")
             val frame = json.decodeFromString<WebSocketFrame>(text)
+            // Never log wire payloads: frames may carry bearer tokens, prompts and file data.
+            if (traceEnabled) Log.d(TRACE_TAG, "<< ${frame.eventType}")
             when (frame.eventType) {
+                "RUNTIME_STATE" -> frame.decodePayload<RuntimeStateDto>(json)?.let { snapshot ->
+                    if (_activeWorkspace.value != snapshot.workspace) {
+                        latestTreeRequestId = null
+                        _fileTree.value = emptyList()
+                        _fileContent.value = null
+                    }
+                    _activeWorkspace.value = snapshot.workspace
+                    _activeSessionId.value = snapshot.sessionId
+                    _tasks.value = snapshot.tasks.associateBy { it.id }
+                    setPendingDiffs { snapshot.diffs.map { FileDiffDto(it.fileName, it.diffText) } }
+                    _pendingPermission.value = snapshot.permissions.firstOrNull { acceptsSession(it.sessionId) }
+                    _pendingQuestion.value = snapshot.questions.firstOrNull { acceptsSession(it.sessionId) }
+                }
+                "TOKEN_ROTATED" -> frame.decodePayload<TokenRotatedPayload>(json)?.let {
+                    if (it.deviceId == _currentDeviceId.value) {
+                        token = it.issuedToken
+                        _issuedToken.value = it.issuedToken
+                    }
+                }
                 "WORKSPACE_LIST" -> frame.decodePayload<List<WorkspaceDto>>(json)?.let { _workspaces.value = it }
                 "WORKSPACE_OPENED" -> frame.decodePayload<OpenWorkspacePayload>(json)?.let {
                     _activeWorkspace.value = it.path
+                    latestTreeRequestId = null
                     _fileTree.value = emptyList() // stale tree belongs to the old workspace; re-fetch on next Files visit
                 }
                 "CHAT_MESSAGE" -> frame.decodePayload<BridgeChatMessageDto>(json)?.let { msg ->
@@ -306,8 +331,9 @@ class RemoteSessionManager(
                 "SESSION_LIST" -> frame.decodePayload<List<SessionDto>>(json)?.let { _sessions.value = it }
                 "SESSION_SWITCHED" -> frame.decodePayload<SessionSwitchedDto>(json)?.let { _activeSessionId.value = it.id }
                 "ALL_SESSIONS_LIST" -> {
-                    _allSessionsLoading.value = false
                     frame.decodePayload<AllSessionsListDto>(json)?.let {
+                        if (it.requestId != null && it.requestId != latestGlobalRequestId) return@let
+                        _allSessionsLoading.value = false
                         _allSessions.value = it.sessions
                         _allSessionsNextCursor.value = it.nextCursor
                         _allSessionsError.value = null
@@ -323,6 +349,7 @@ class RemoteSessionManager(
                 "SESSION_OPENED" -> frame.decodePayload<SessionOpenedDto>(json)?.let {
                     _openGlobalSessionLoading.value = false
                     _activeWorkspace.value = it.worktree
+                    latestTreeRequestId = null
                     _fileTree.value = emptyList()
                     _activeSessionId.value = it.id
                 }
@@ -344,7 +371,17 @@ class RemoteSessionManager(
                 // Bridge sends one root FileNodeDto (see bridge/main.js FETCH_FILE_TREE), not
                 // a list — the explorer renders the workspace's children flat, without a
                 // wrapping root row (see flattenTree in FileTreeRows.kt).
-                "FILE_TREE" -> frame.decodePayload<FileNodeDto>(json)?.let { _fileTree.value = it.children ?: emptyList() }
+                "FILE_TREE" -> {
+                    val correlated = frame.decodePayload<BridgeFileTreeDto>(json)
+                    if (correlated != null) {
+                        if (correlated.requestId == latestTreeRequestId) {
+                            _fileTree.value = correlated.tree.children ?: emptyList()
+                        }
+                    } else {
+                        // Compatibility with pre-correlation bridges.
+                        frame.decodePayload<FileNodeDto>(json)?.let { _fileTree.value = it.children ?: emptyList() }
+                    }
+                }
                 "FILE_CONTENT" -> {
                     val correlated = frame.decodePayload<BridgeFileContentDto>(json)
                     if (correlated != null) {
@@ -389,7 +426,8 @@ class RemoteSessionManager(
                     // attributed to it — surfaced via allSessionsError instead of
                     // only the generic lastError, since the dedicated screen needs
                     // an inline message, not a toast-style one-shot.
-                    if (_allSessionsLoading.value && (failure?.operation == "FETCH_ALL_SESSIONS"
+                    if (_allSessionsLoading.value && (failure?.requestId == null || failure.requestId == latestGlobalRequestId)
+                            && (failure?.operation == "FETCH_ALL_SESSIONS"
                                 || (failure?.operation == null && msg.startsWith("FETCH_ALL_SESSIONS failed:")))) {
                         _allSessionsLoading.value = false
                         _allSessionsError.value = msg
@@ -411,7 +449,7 @@ class RemoteSessionManager(
         scope.launch {
             try {
                 val encoded = json.encodeToString(WebSocketFrame(eventType, payload))
-                if (traceEnabled) Log.d(TRACE_TAG, ">> $encoded")
+                if (traceEnabled) Log.d(TRACE_TAG, ">> $eventType")
                 ws.send(encoded)
             } catch (e: Exception) {
                 Log.e("RemoteSessionManager", "Failed to send $eventType", e)
@@ -439,7 +477,12 @@ class RemoteSessionManager(
      *  WORKSPACE_LIST, which [workspaces] already reflects. */
     fun addWorkspace(path: String) = sendString("ADD_WORKSPACE", path)
 
-    fun fetchFileTree() = sendRaw("FETCH_FILE_TREE")
+    fun fetchFileTree(): String {
+        val id = java.util.UUID.randomUUID().toString()
+        latestTreeRequestId = id
+        sendRaw("FETCH_FILE_TREE", json.encodeToJsonElement(FetchFileTreeRequestDto(id)))
+        return id
+    }
 
     fun fetchFile(path: String): String {
         val id = java.util.UUID.randomUUID().toString()
@@ -498,13 +541,15 @@ class RemoteSessionManager(
     fun fetchAllSessions(cursor: String? = null) {
         _allSessionsLoading.value = true
         _allSessionsError.value = null
+        val requestId = java.util.UUID.randomUUID().toString()
+        latestGlobalRequestId = requestId
         // A fresh list fetch is the user starting over — an earlier
         // OPEN_SESSION_GLOBAL failure must not keep GlobalSessionsScreen
         // stuck on its error state forever (found via on-device testing:
         // openGlobalSessionError otherwise never clears, so a screen that
         // hit an open error stays on it even after a successful re-fetch).
         _openGlobalSessionError.value = null
-        sendRaw("FETCH_ALL_SESSIONS", json.encodeToJsonElement(FetchAllSessionsPayload(cursor = cursor)))
+        sendRaw("FETCH_ALL_SESSIONS", json.encodeToJsonElement(FetchAllSessionsPayload(cursor = cursor, requestId = requestId)))
     }
 
     /** ADR-0002: opens a session found via [fetchAllSessions], switching
@@ -549,6 +594,12 @@ class RemoteSessionManager(
     /** Task 8.2.2: lists paired devices (never exposes raw tokens — see
      *  [DeviceDto]); response lands in [devices]. */
     fun listDevices() = sendRaw("LIST_DEVICES")
+
+    /** Replace this phone's credential without changing another device's token. */
+    fun rotateOwnToken() = sendRaw("ROTATE_TOKEN")
+
+    /** Release the single-controller lease so another paired device may mutate state. */
+    fun releaseControl() = sendRaw("RELEASE_CONTROL")
 
     /** Task 8.2.1/8.2.2: revokes a paired device's token, closing its live
      *  connection (if any) and rejecting any future reconnect with it. */

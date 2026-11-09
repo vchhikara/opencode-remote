@@ -38,3 +38,16 @@ Every authenticated socket carries `ws.deviceId`/`ws.deviceName`, which flows in
 - **No mTLS / transport-level device identity.** Device identity is entirely a bearer-token concept at the application layer; the WebSocket transport itself has no client-certificate verification. A token that leaks off-device (e.g. via a compromised phone) is fully usable by whoever holds it until it's revoked.
 - **No rate limiting on `CONNECT` attempts** — the pairing secret is checked with a constant-time comparison to prevent timing attacks, but repeated bad-token connection attempts aren't throttled or locked out.
 - `DEVICE_STORE_PATH` is a plaintext JSON file on the bridge host; anyone with filesystem access to that file can read (though not use, since the bridge itself never round-trips them) all device metadata, and anyone able to write it can forge entries.
+
+## Implementation amendments (9 November 2026)
+
+The sections above describe the original design decision and are retained as historical context. The current implementation differs in important security-relevant ways:
+
+- The device store now persists only `sha256:<digest>` verifier keys, not raw bearer tokens; raw-token-key files are migrated on startup, with atomic writes and mode `0600`.
+- Pairing is limited by both a configurable startup window and device count, defaulting to two minutes and one successful pairing.
+- Failed `CONNECT` attempts from a single peer IP are temporarily blocked after 10 failures in 60 seconds (close `4008`); this is not distributed rate limiting.
+- Authenticated devices can manually `ROTATE_TOKEN` to replace only their own bearer and verifier. There is no automatic expiry or guaranteed crash-safe recovery if the Android client fails to save the new bearer.
+- Audit logs omit raw terminal command text, Git arguments and question answers. The log still is not tamper-evident.
+- A single-device controller lease now guards shared global mutations; it is not per-device OpenCode server isolation. See [ADR 0003](0003-shared-state-controller-lease.md).
+
+The historical claim that no rotation or rate limiting exists is superseded by this amendment. The residual risks in [SECURITY.md](../SECURITY.md) are authoritative.

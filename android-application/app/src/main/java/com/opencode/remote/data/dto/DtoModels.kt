@@ -15,6 +15,9 @@ import java.util.UUID
 data class ConnectPayload(val deviceName: String, val token: String)
 
 @Serializable
+data class TokenRotatedPayload(val deviceId: String, val issuedToken: String)
+
+@Serializable
 data class ConnectedPayload(
     val sessionId: String,
     val deviceName: String,
@@ -93,6 +96,12 @@ data class FileNodeDto(
 
 /** Correlated file-wire protocol. Legacy peers still exchange bare strings. */
 @Serializable
+data class FetchFileTreeRequestDto(val requestId: String)
+
+@Serializable
+data class BridgeFileTreeDto(val requestId: String, val tree: FileNodeDto)
+
+@Serializable
 data class FetchFileRequestDto(val path: String, val requestId: String)
 
 @Serializable
@@ -112,6 +121,18 @@ data class FileDiffDto(
 )
 
 /** Exact wire shape of the bridge's FILE_DIFF payload (main.js pushFileDiff). */
+@Serializable
+data class RuntimeStateDto(
+    val workspace: String,
+    val sessionId: String? = null,
+    val tasks: List<TaskDto> = emptyList(),
+    val diffs: List<BridgeFileDiffDto> = emptyList(),
+    val permissions: List<PermissionRequestDto> = emptyList(),
+    val questions: List<QuestionRequestDto> = emptyList(),
+    val terminalPtyId: String? = null
+)
+
+/** Wire snapshot replaces stale in-memory state after a WebSocket reconnect. */
 @Serializable
 data class BridgeFileDiffDto(val fileName: String, val diffText: String)
 
@@ -239,7 +260,7 @@ data class GlobalSessionDto(
  *  FETCH_ALL_SESSIONS frame. Both fields optional on the wire; `limit`
  *  null lets the bridge apply its own default. */
 @Serializable
-data class FetchAllSessionsPayload(val limit: Int? = null, val cursor: String? = null)
+data class FetchAllSessionsPayload(val limit: Int? = null, val cursor: String? = null, val requestId: String? = null)
 
 /** Wire shape of the bridge's ALL_SESSIONS_LIST payload (main.js
  *  FETCH_ALL_SESSIONS reply) — `nextCursor` is present only when more rows
@@ -247,7 +268,8 @@ data class FetchAllSessionsPayload(val limit: Int? = null, val cursor: String? =
 @Serializable
 data class AllSessionsListDto(
     val sessions: List<GlobalSessionDto>,
-    val nextCursor: String? = null
+    val nextCursor: String? = null,
+    val requestId: String? = null
 )
 
 /** Outbound wire shape for RemoteSessionManager.openGlobalSession's

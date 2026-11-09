@@ -17,19 +17,23 @@ Full design rationale is in [ADR 0001](adr/0001-per-device-tokens.md); the short
 
 - The bridge starts with a **pairing secret** (`BRIDGE_TOKEN`, random 32-byte hex by default), printed as a QR code. The secret expires after 120 seconds or after one successful pairing by default. Both limits are configurable with `PAIRING_WINDOW_MS` and `PAIRING_MAX_DEVICES`. A restart opens a new window, so avoid reusing an explicit static `BRIDGE_TOKEN`.
 - The first device to present it in `CONNECT` gets a **per-device token**, persisted server-side (`DEVICE_STORE_PATH`) and used for all future connections instead of the pairing secret.
-- Devices can be individually revoked (`REVOKE_TOKEN`), deleting that device's token and force-closing its live socket, without affecting other paired devices or requiring the pairing secret to be rotated.
-- Every authenticated action (permission decisions, terminal commands, git commands) is attributed to a `deviceId`/`deviceName` and appended to an audit log (`AUDIT_LOG_PATH`, JSON-lines, retrievable via `FETCH_AUDIT_LOG`).
+- Devices can be individually revoked (`REVOKE_TOKEN`) or rotate their own token (`ROTATE_TOKEN`). A rotation replaces the SHA-256 verifier and invalidates the previous bearer; the requesting Android client persists the replacement. A crash before saving it may require a new pairing.
+- Approved operations (permission decisions, terminal commands, git commands) are attributed to a `deviceId`/`deviceName` in an audit log (`AUDIT_LOG_PATH`, JSON-lines, retrievable via `FETCH_AUDIT_LOG`). Terminal text is represented by a hash and length, git arguments and question-answer content are omitted; raw command secrets should not be persisted in the audit log.
 
 ### What this model does *not* provide (from ADR 0001's "Not solved by this decision")
 
-- **No token expiry or rotation.** A per-device token is valid indefinitely until explicitly revoked.
+- **No automatic expiry or scheduled rotation.** A per-device token remains valid until manually revoked or rotated. Manual rotation is implemented, but no crash-safe two-phase acknowledgement/recovery mechanism exists.
 - **No transport-level device identity.** There's no mTLS or client-certificate verification; device identity is a bearer token at the application layer. A token that leaks off-device is fully usable by whoever holds it until revoked.
-- **No rate limiting on `CONNECT` attempts.** The pairing secret is compared in constant time (`timingSafeTokenEquals`) to resist timing attacks, but repeated bad-token connection attempts aren't throttled or locked out.
+- **Limited anti-abuse controls.** A peer IP producing 10 failed authentication attempts in a 60-second window is temporarily rejected (close code `4008`). This is not distributed rate limiting; it does not stop multiple IPs or upstream network saturation. Pairing comparisons use constant time.
 - **`DEVICE_STORE_PATH` is a private JSON file** on the bridge host. It stores SHA-256 token verifiers and device metadata, not bearer tokens. Existing raw-token-key stores are migrated automatically at startup. File mode 0600 is enforced; a privileged local user or malicious process with write access can still tamper with the authorization store. A SHA-256 verifier does not protect against a stolen bearer token from a phone or network trace.
 
-Pairing is single-use by default; there is still no rate limiting for bad-token connection attempts beyond the WebSocket resource and authentication-time limits. The socket is restricted to `/ws`, has a 16 MiB inbound message cap, a 10-second pre-authentication timeout, a 64-client limit and ping/pong cleanup.
+Pairing is single-use by default. The socket is restricted to `/ws`, has a 16 MiB inbound message cap, a 10-second pre-authentication timeout, a 64-client limit, basic IP failed-auth throttling and ping/pong cleanup. Direct file/tree responses are limited to 8 MiB; tree enumeration also has recursion-depth and node-count limits. This is not protection against every resource-exhaustion attack.
 
 This is a deliberate, documented trade-off (see ADR 0001's "Alternatives considered") for a **personal-use, single-operator tool** run over a LAN or a private tunnel, not a multi-tenant service. It is not designed to withstand a hostile network or a hostile co-tenant on the bridge host.
+
+## Shared-state ownership
+
+The bridge still uses one mutable workspace, OpenCode process/session and PTY across paired devices. A **single-device controller lease** now rejects concurrent mutations by other authenticated devices, and a controller can issue `RELEASE_CONTROL` while idle. Other paired devices can still observe state. This is interim contention prevention, not per-device session isolation or multi-user authorization.
 
 ## Recommended deployment
 

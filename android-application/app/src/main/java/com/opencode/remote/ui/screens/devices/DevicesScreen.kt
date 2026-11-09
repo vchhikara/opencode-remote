@@ -63,19 +63,25 @@ fun DevicesScreen(sessionManager: RemoteSessionManager) {
                 "Paired devices",
                 subtitle = "Each phone holds its own credential. Revoking one leaves the rest signed in."
             ) {
-                HeaderAction("Refresh", onClick = {
-                    sessionManager.listDevices()
-                    sessionManager.fetchAuditLog()
-                })
+                Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    HeaderAction("Release control", onClick = { sessionManager.releaseControl() })
+                    HeaderAction("Refresh", onClick = {
+                        sessionManager.listDevices()
+                        sessionManager.fetchAuditLog()
+                    })
+                }
             }
         }
         if (devices.isEmpty()) {
             item { EmptyNote("No devices listed", "The bridge hasn't reported any paired devices yet.") }
         }
         items(devices.distinctBy { it.deviceId }, key = { it.deviceId }) { device ->
-            DeviceRow(device, isCurrent = currentId != null && device.deviceId == currentId) {
-                sessionManager.revokeToken(device.deviceId)
-            }
+            DeviceRow(
+                device,
+                isCurrent = currentId != null && device.deviceId == currentId,
+                onRevoke = { sessionManager.revokeToken(device.deviceId) },
+                onRotate = { sessionManager.rotateOwnToken() }
+            )
         }
         item {
             Column(Modifier.fillMaxWidth().padding(18.dp)) {
@@ -92,7 +98,7 @@ fun DevicesScreen(sessionManager: RemoteSessionManager) {
 }
 
 @Composable
-private fun DeviceRow(device: DeviceDto, isCurrent: Boolean, onRevoke: () -> Unit) {
+private fun DeviceRow(device: DeviceDto, isCurrent: Boolean, onRevoke: () -> Unit, onRotate: () -> Unit) {
     val c = Oc.colors
     // Two-step revoke: the first tap arms it for a few seconds.
     var armed by remember(device.deviceId) { mutableStateOf(false) }
@@ -120,7 +126,8 @@ private fun DeviceRow(device: DeviceDto, isCurrent: Boolean, onRevoke: () -> Uni
             )
         }
         when {
-            isCurrent -> OcButton("Current", {}, enabled = false, height = 34.dp)
+            isCurrent && armed -> OcButton("Confirm rotate", { armed = false; onRotate() }, kind = OcButtonKind.NegativeOutline, height = 34.dp)
+            isCurrent -> OcButton("Rotate token", { armed = true }, kind = OcButtonKind.NegativeOutline, height = 34.dp)
             armed -> OcButton("Confirm revoke", { armed = false; onRevoke() }, kind = OcButtonKind.Destructive, height = 34.dp)
             else -> OcButton("Revoke", { armed = true }, kind = OcButtonKind.NegativeOutline, height = 34.dp)
         }

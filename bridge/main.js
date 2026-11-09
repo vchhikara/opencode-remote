@@ -14,6 +14,12 @@ const MAX_WS_PAYLOAD = 16 * 1024 * 1024;
 const MAX_CLIENTS = 64;
 const MAX_BUFFERED_BYTES = 8 * 1024 * 1024;
 const AUTH_TIMEOUT_MS = 10000;
+const AUTH_FAILURE_LIMIT = 10;
+const AUTH_FAILURE_WINDOW_MS = 60_000;
+const MAX_AUTH_FAILURE_ENTRIES = 2048;
+const MAX_FILE_CONTENT_BYTES = 8 * 1024 * 1024;
+const MAX_TREE_NODES = 10000;
+const MAX_TREE_DEPTH = 24;
 const OPCODE = process.env.OPCODE || 'opencode';
 const AUTH_TOKEN = process.env.BRIDGE_TOKEN || crypto.randomBytes(32).toString('hex');
 // Pairing credentials are usable only during startup's short window.
@@ -107,11 +113,71 @@ function timingSafeTokenEquals(a, b) {
   return bufA.length === bufB.length && bufA.length > 0 && crypto.timingSafeEqual(bufA, bufB);
 }
 
+// Rate-limit rejected authentication attempts by the socket's actual peer IP.
+// Ignore X-Forwarded-For because a client can forge it unless a trusted proxy is configured.
+const authFailures = new Map();
+function rejectAuthFrom(ip) {
+  const now = Date.now();
+  const previous = authFailures.get(ip);
+  const count = previous && now - previous.started < AUTH_FAILURE_WINDOW_MS ? previous.count + 1 : 1;
+  authFailures.delete(ip);
+  authFailures.set(ip, { count, started: count === 1 ? now : previous.started });
+  if (authFailures.size > MAX_AUTH_FAILURE_ENTRIES) authFailures.delete(authFailures.keys().next().value);
+  return count >= AUTH_FAILURE_LIMIT;
+}
+function isAuthBlocked(ip) {
+  const state = authFailures.get(ip);
+  if (!state) return false;
+  if (Date.now() - state.started >= AUTH_FAILURE_WINDOW_MS) {
+    authFailures.delete(ip);
+    return false;
+  }
+  return state.count >= AUTH_FAILURE_LIMIT;
+}
+
+// Best-effort short disconnect catch-up for previously paired devices.
+// Not an acknowledgement-backed durable push service.
+const notificationHistory = [];
+const deliveredNotificationSeq = new Map();
+let notificationSeq = 0;
+const MAX_NOTIFICATION_HISTORY = 100;
+function replayNotifications(ws) {
+  const last = deliveredNotificationSeq.get(ws.deviceId) || 0;
+  for (const payload of notificationHistory) {
+    if (payload.seq <= last) continue;
+    if (ws.readyState !== WebSocket.OPEN || ws.bufferedAmount > MAX_BUFFERED_BYTES) return;
+    ws.send(JSON.stringify({ eventType: 'NOTIFY', payload }));
+    deliveredNotificationSeq.set(ws.deviceId, payload.seq);
+  }
+}
+
 const clients = new Set();
+// One controlling device at a time. Multiple devices can observe read-only state,
+// but cannot concurrently redirect the shared OpenCode server workspace/session.
+const MUTATING_ACTIONS = new Set([
+  'OPEN_WORKSPACE', 'ADD_WORKSPACE', 'OPEN_SESSION_GLOBAL', 'SWITCH_SESSION',
+  'NEW_SESSION', 'FORK_SESSION', 'PROMPT', 'TERMINAL', 'TERMINAL_RESIZE',
+  'PERMISSION_REPLY', 'QUESTION_REPLY', 'QUESTION_REJECT', 'GIT', 'KILL_TASK',
+  'ACCEPT_DIFF', 'REJECT_DIFF', 'REVOKE_TOKEN', 'ROTATE_TOKEN'
+]);
+const CONTEXT_SWITCH_ACTIONS = new Set([
+  'OPEN_WORKSPACE', 'OPEN_SESSION_GLOBAL', 'SWITCH_SESSION',
+  'NEW_SESSION', 'FORK_SESSION', 'PROMPT'
+]);
+let controllerDeviceId = null;
+function releaseControllerIfIdle() {
+  if (Object.keys(tasks).length > 0) return;
+  if (![...clients].some(client => client.authenticated && client.readyState === WebSocket.OPEN
+      && client.deviceId === controllerDeviceId)) controllerDeviceId = null;
+}
 let sessions = {};
 let activeWorkspace = process.cwd();
 let pendingDiffs = {};
 let tasks = {};
+// Pending interactive requests observed on the active OpenCode SSE feed.
+// Replayed to reconnecting clients; these maps are not a durable event log.
+const pendingPermissions = new Map();
+const pendingQuestions = new Map();
 const WORKSPACE_ROOT = process.env.WORKSPACE_ROOT || process.cwd();
 
 // --- Audit log (Task 8.4.1) ---
@@ -292,8 +358,19 @@ function pushChatMessage(msg, isUser, actionDesc, details) {
 // unchanged). Manual on-device background-push delivery is therefore NOT
 // claimed Done here — see PROGRESS.md.
 function notifyExternal(kind, detail) {
-  console.log(`  [notify] ${kind}: ${JSON.stringify(detail).slice(0, 200)}`);
-  broadcast('NOTIFY', { kind, detail });
+  // Notification details may include provider errors, prompts or local paths.
+  // Do not disclose them in plaintext bridge process logs.
+  console.log(`  [notify] ${kind}`);
+  const payload = { kind, detail, seq: ++notificationSeq };
+  notificationHistory.push(payload);
+  if (notificationHistory.length > MAX_NOTIFICATION_HISTORY) notificationHistory.shift();
+  broadcast('NOTIFY', payload);
+  for (const ws of clients) {
+    if (ws.authenticated && ws.readyState === WebSocket.OPEN
+        && ws.bufferedAmount <= MAX_BUFFERED_BYTES) {
+      deliveredNotificationSeq.set(ws.deviceId, notificationSeq);
+    }
+  }
 }
 
 function pushFileDiff(fileName, diffText) {
@@ -349,6 +426,18 @@ function pushTaskRemoved(id) {
   broadcast('TASK_REMOVED', id);
 }
 
+function runtimeSnapshot() {
+  return {
+    workspace: activeWorkspace,
+    sessionId: ocSessionId,
+    tasks: Object.values(tasks).map(t => ({ id: t.id, name: t.name, port: t.port || null, status: t.status })),
+    diffs: Object.entries(pendingDiffs).map(([fileName, diffText]) => ({ fileName, diffText })),
+    permissions: Array.from(pendingPermissions.values()),
+    questions: Array.from(pendingQuestions.values()),
+    terminalPtyId: activePtyId
+  };
+}
+
 // --- OpenCode server lifecycle ---
 
 // Starts (or restarts) the persistent `opencode serve` process bound to
@@ -362,6 +451,9 @@ function startOpenCodeServer() {
   // always starting null — ensureSession() will fall back to creating a new
   // one if this id no longer exists server-side.
   ocSessionId = loadPersistedSessionId();
+  // SSE requests are scoped to a particular OpenCode server/workspace instance.
+  pendingPermissions.clear();
+  pendingQuestions.clear();
 
   const proc = spawn(OPCODE, ['serve', '--port', String(OC_SERVE_PORT), '--hostname', '127.0.0.1'], {
     cwd: activeWorkspace,
@@ -468,23 +560,27 @@ function relaySseEvent(evt, emit) {
   // confirmed which key the live event actually uses for these two types.
   if (evt.type === 'permission.asked' || evt.type === 'permission.v2.asked') {
     const d = evt.properties || evt.data || {};
-    emit('PERMISSION_REQUEST', {
+    const request = {
       permissionId: d.id,
       sessionId: d.sessionID,
       tool: d.permission || (d.tool && d.tool.callID) || null,
       input: d
-    });
+    };
+    if (typeof d.id === 'string') pendingPermissions.set(d.id, request);
+    emit('PERMISSION_REQUEST', request);
     notifyExternal('permission_request', { permissionId: d.id, sessionId: d.sessionID });
     return;
   }
   if (evt.type === 'question.asked' || evt.type === 'question.v2.asked') {
     const d = evt.properties || evt.data || {};
-    emit('QUESTION_REQUEST', {
+    const request = {
       questionId: d.id,
       sessionId: d.sessionID,
       text: d.text || d.question || null,
       options: d.options || null
-    });
+    };
+    if (typeof d.id === 'string') pendingQuestions.set(d.id, request);
+    emit('QUESTION_REQUEST', request);
     return;
   }
   // Other event types (session.updated, session.idle, plugin.added, etc.) are
@@ -602,6 +698,7 @@ async function runPrompt(prompt) {
   } finally {
     delete tasks[taskId];
     pushTaskRemoved(taskId);
+    releaseControllerIfIdle();
     notifyExternal('task_completed', { taskId });
     pushAgentState('Idle');
   }
@@ -609,20 +706,26 @@ async function runPrompt(prompt) {
 
 // --- File tree ops ---
 function fileTreeToJson(dir, rootName) {
-  function walk(d, rel) {
+  let nodes = 0;
+  function walk(d, rel, depth = 0) {
+    if (depth > MAX_TREE_DEPTH) throw new Error('File tree depth limit exceeded');
     const entries = fs.readdirSync(d, { withFileTypes: true });
     const children = [];
     for (const e of entries) {
       if (e.name.startsWith('.') || e.name === 'node_modules') continue;
+      if (++nodes > MAX_TREE_NODES) throw new Error('File tree node limit exceeded');
       const full = path.join(d, e.name);
       const rp = rel ? `${rel}/${e.name}` : e.name;
       try {
         if (e.isDirectory()) {
-          children.push({ name: e.name, path: rp, isDirectory: true, children: walk(full, rp) });
+          children.push({ name: e.name, path: rp, isDirectory: true, children: walk(full, rp, depth + 1) });
         } else {
           children.push({ name: e.name, path: rp, isDirectory: false });
         }
-      } catch {}
+      } catch (error) {
+        // Resource limits should not be silently interpreted as missing entries.
+        if (/^File tree (depth|node) limit exceeded$/.test(error.message)) throw error;
+      }
     }
     return children;
   }
@@ -670,6 +773,11 @@ const wss = new WebSocketServer({
 });
 
 wss.on('connection', (ws, req) => {
+  const clientAddr = req.socket.remoteAddress || 'unknown';
+  if (isAuthBlocked(clientAddr)) {
+    ws.close(4008, 'authentication rate limit');
+    return;
+  }
   if (clients.size >= MAX_CLIENTS) {
     ws.close(1013, 'server busy');
     return;
@@ -682,7 +790,6 @@ wss.on('connection', (ws, req) => {
     if (!ws.authenticated) ws.close(4001, 'authentication timeout');
   }, AUTH_TIMEOUT_MS);
   authTimer.unref();
-  const clientAddr = req.socket.remoteAddress;
   console.log(`  Client connected: ${clientAddr}`);
 
   ws.on('message', data => {
@@ -699,6 +806,13 @@ wss.on('connection', (ws, req) => {
     }
     const eventType = frame.eventType;
     const payload = frame.payload;
+    // Do this before any implicit string conversion or dispatch: JSON objects
+    // with non-callable toString/valueOf can otherwise throw out of the WS
+    // event callback and terminate the bridge process.
+    if (typeof eventType !== 'string' || !/^[A-Z_]{1,64}$/.test(eventType)) {
+      ws.close(1003, 'invalid event type');
+      return;
+    }
     console.log(`  < ${eventType}`);
 
     if (eventType === 'CONNECT') {
@@ -714,6 +828,7 @@ wss.on('connection', (ws, req) => {
       if (lookupKey && validDeviceRecord(lookupKey, existingDevice)) {
         ws.authenticated = true;
         clearTimeout(authTimer);
+        authFailures.delete(clientAddr);
         ws.deviceToken = suppliedToken;
         ws.deviceTokenKey = lookupKey;
         ws.deviceId = existingDevice.deviceId;
@@ -721,6 +836,7 @@ wss.on('connection', (ws, req) => {
         sessions[suppliedToken] = { name: deviceName, workspace: activeWorkspace };
         ws.send(JSON.stringify({ eventType: 'CONNECTED', payload: { sessionId: suppliedToken, deviceId: existingDevice.deviceId, deviceName } }));
         ws.send(JSON.stringify({ eventType: 'WORKSPACE_LIST', payload: workspaces }));
+        replayNotifications(ws);
         pushGitStatus(ws);
         return;
       }
@@ -729,32 +845,73 @@ wss.on('connection', (ws, req) => {
       // per-device token, and tell the client to switch to it.
       if (typeof suppliedToken === 'string' && Date.now() < pairingDeadline
           && pairingsRemaining > 0 && timingSafeTokenEquals(suppliedToken, AUTH_TOKEN)) {
-        const { token, deviceId } = issueDeviceToken(deviceName);
+        let credential;
+        try {
+          credential = issueDeviceToken(deviceName);
+        } catch (error) {
+          ws.close(1011, 'cannot persist pairing credentials');
+          return;
+        }
+        const { token, deviceId } = credential;
         pairingsRemaining -= 1;
         ws.authenticated = true;
         clearTimeout(authTimer);
+        authFailures.delete(clientAddr);
         ws.deviceToken = token;
         ws.deviceTokenKey = deviceTokenKey(token);
         ws.deviceId = deviceId;
         ws.deviceName = deviceName;
+        // Newly paired devices should not see earlier notifications.
+        deliveredNotificationSeq.set(deviceId, notificationSeq);
         sessions[token] = { name: deviceName, workspace: activeWorkspace };
         ws.send(JSON.stringify({ eventType: 'CONNECTED', payload: { sessionId: token, deviceId, deviceName, issuedToken: token } }));
         ws.send(JSON.stringify({ eventType: 'WORKSPACE_LIST', payload: workspaces }));
+        replayNotifications(ws);
         pushGitStatus(ws);
         return;
       }
 
       // Neither a known device token nor the pairing secret.
-      ws.close(4001, 'unauthorized');
+      ws.close(rejectAuthFrom(clientAddr) ? 4008 : 4001, 'unauthorized');
       return;
     }
 
     if (!ws.authenticated) {
-      ws.close(4001, 'unauthorized');
+      ws.close(rejectAuthFrom(clientAddr) ? 4008 : 4001, 'unauthorized');
       return;
     }
 
+    if (eventType === 'RELEASE_CONTROL') {
+      if (controllerDeviceId === ws.deviceId && Object.keys(tasks).length === 0) {
+        controllerDeviceId = null;
+        ws.send(JSON.stringify({ eventType: 'CONTROL_RELEASED', payload: { deviceId: ws.deviceId } }));
+      } else {
+        ws.send(JSON.stringify({ eventType: 'ERROR', payload: {
+          operation: 'RELEASE_CONTROL', message: 'No idle control lease owned by this device' } }));
+      }
+      return;
+    }
+    if (MUTATING_ACTIONS.has(eventType)) {
+      if (controllerDeviceId !== null && controllerDeviceId !== ws.deviceId) {
+        ws.send(JSON.stringify({ eventType: 'ERROR', payload: {
+          operation: eventType, message: 'Another device currently controls this bridge' } }));
+        return;
+      }
+      if (CONTEXT_SWITCH_ACTIONS.has(eventType) && Object.keys(tasks).length > 0) {
+        ws.send(JSON.stringify({ eventType: 'ERROR', payload: {
+          operation: eventType, message: 'Wait for the running prompt to finish before switching context' } }));
+        return;
+      }
+      controllerDeviceId = ws.deviceId;
+    }
+
     switch (eventType) {
+      case 'FETCH_RUNTIME_STATE': {
+        // A reconnect explicitly requests a full current-state replacement.
+        // Deliberately not sent during legacy CONNECT handshakes.
+        ws.send(JSON.stringify({ eventType: 'RUNTIME_STATE', payload: runtimeSnapshot() }));
+        break;
+      }
       case 'FETCH_WORKSPACES': {
         ws.send(JSON.stringify({ eventType: 'WORKSPACE_LIST', payload: workspaces }));
         break;
@@ -796,11 +953,26 @@ wss.on('connection', (ws, req) => {
         break;
       }
       case 'FETCH_FILE_TREE': {
+        // Correlate only modern structured requests. Bare legacy frames keep the
+        // original FILE_TREE payload shape for backwards compatibility.
+        const structured = payload !== null && typeof payload === 'object' && !Array.isArray(payload);
+        const requestId = structured ? payload.requestId : null;
+        if (structured && (typeof requestId !== 'string' || requestId.length < 1 || requestId.length > 128)) {
+          ws.send(JSON.stringify({ eventType: 'ERROR', payload: {
+            operation: 'FETCH_FILE_TREE', message: 'Invalid request ID' } }));
+          break;
+        }
         try {
           const tree = fileTreeToJson(activeWorkspace, path.basename(activeWorkspace));
-          ws.send(JSON.stringify({ eventType: 'FILE_TREE', payload: tree }));
+          const reply = structured ? { requestId, tree } : tree;
+          if (Buffer.byteLength(JSON.stringify(reply)) > MAX_FILE_CONTENT_BYTES) {
+            throw new Error('File tree exceeds the 8 MiB direct-response limit');
+          }
+          ws.send(JSON.stringify({ eventType: 'FILE_TREE', payload: reply }));
         } catch (e) {
-          ws.send(JSON.stringify({ eventType: 'ERROR', payload: { message: e.message } }));
+          ws.send(JSON.stringify({ eventType: 'ERROR', payload: {
+            operation: 'FETCH_FILE_TREE', message: e.message,
+            ...(structured ? { requestId } : {}) } }));
         }
         break;
       }
@@ -824,7 +996,12 @@ wss.on('connection', (ws, req) => {
         }
         try {
           const fullPath = resolveInsideWorkspace(fp);
-          if (fs.statSync(fullPath).isFile()) {
+          const stat = fs.statSync(fullPath);
+          if (stat.isFile()) {
+            if (stat.size > MAX_FILE_CONTENT_BYTES) {
+              sendFileError('File exceeds the 8 MiB direct-response limit');
+              break;
+            }
             const content = fs.readFileSync(fullPath, 'utf-8');
             const response = structured ? { requestId, path: fp, content } : content;
             ws.send(JSON.stringify({ eventType: 'FILE_CONTENT', payload: response }));
@@ -886,16 +1063,24 @@ wss.on('connection', (ws, req) => {
         break;
       }
       case 'FETCH_ALL_SESSIONS': {
-        // Global, cross-workspace session list — read directly from
-        // OpenCode's own on-disk DB (sessionStore.js), independent of
-        // activeWorkspace or whether opencode serve is even running. See
-        // adr/0002-global-cross-workspace-session-search.md.
+        // Read OpenCode's persisted cross-workspace session DB. Echo the
+        // request ID so a late page cannot replace a newer search result.
+        const opts = (payload && typeof payload === 'object' && !Array.isArray(payload)) ? payload : {};
+        const requestId = opts.requestId;
+        if (requestId !== undefined && (typeof requestId !== 'string'
+            || requestId.length < 1 || requestId.length > 128)) {
+          ws.send(JSON.stringify({ eventType: 'ERROR', payload: {
+            message: 'Invalid global-session request ID', operation: 'FETCH_ALL_SESSIONS' } }));
+          break;
+        }
         try {
-          const opts = (payload && typeof payload === 'object') ? payload : {};
           const result = listAllSessions({ limit: opts.limit, cursor: opts.cursor });
-          ws.send(JSON.stringify({ eventType: 'ALL_SESSIONS_LIST', payload: result }));
+          ws.send(JSON.stringify({ eventType: 'ALL_SESSIONS_LIST', payload: {
+            ...result, ...(requestId ? { requestId } : {}) } }));
         } catch (e) {
-          ws.send(JSON.stringify({ eventType: 'ERROR', payload: { message: `FETCH_ALL_SESSIONS failed: ${e.message}`, operation: 'FETCH_ALL_SESSIONS' } }));
+          ws.send(JSON.stringify({ eventType: 'ERROR', payload: {
+            message: `FETCH_ALL_SESSIONS failed: ${e.message}`, operation: 'FETCH_ALL_SESSIONS',
+            ...(requestId ? { requestId } : {}) } }));
         }
         break;
       }
@@ -986,18 +1171,21 @@ wss.on('connection', (ws, req) => {
         ocFetch(`/permission/${permissionId}/reply`, {
           method: 'POST',
           body: JSON.stringify({ decision })
-        }).catch(e => console.log(`  ! PERMISSION_REPLY failed: ${e.message}`));
+        }).then(res => { if (res.ok) pendingPermissions.delete(permissionId); })
+          .catch(e => console.log(`  ! PERMISSION_REPLY failed: ${e.message}`));
         break;
       }
       case 'QUESTION_REPLY': {
         // Confirmed endpoint (PROGRESS.md Phase 0): POST /question/{requestID}/reply
         const { questionId, answer } = payload || {};
         if (!questionId) break;
-        appendAuditLog('question_reply', { questionId, answer }, ws);
+        // Never persist arbitrary answer contents in the audit log.
+        appendAuditLog('question_reply', { questionId, answered: true }, ws);
         ocFetch(`/question/${questionId}/reply`, {
           method: 'POST',
           body: JSON.stringify({ answer })
-        }).catch(e => console.log(`  ! QUESTION_REPLY failed: ${e.message}`));
+        }).then(res => { if (res.ok) pendingQuestions.delete(questionId); })
+          .catch(e => console.log(`  ! QUESTION_REPLY failed: ${e.message}`));
         break;
       }
       case 'QUESTION_REJECT': {
@@ -1005,6 +1193,7 @@ wss.on('connection', (ws, req) => {
         const { questionId } = payload || {};
         if (!questionId) break;
         ocFetch(`/question/${questionId}/reject`, { method: 'POST' })
+          .then(res => { if (res.ok) pendingQuestions.delete(questionId); })
           .catch(e => console.log(`  ! QUESTION_REJECT failed: ${e.message}`));
         break;
       }
@@ -1022,7 +1211,11 @@ wss.on('connection', (ws, req) => {
       case 'TERMINAL': {
         const command = String(payload);
         pushTerminalLine(`> ${command}`);
-        appendAuditLog('terminal_command', { command }, ws);
+        appendAuditLog('terminal_command', {
+          // Raw command text may include passwords, access tokens or private data.
+          sha256: crypto.createHash('sha256').update(command).digest('hex'),
+          length: command.length
+        }, ws);
         runTerminalCommand(command).catch(err => pushTerminalLine(`Error: ${err.message}`));
         break;
       }
@@ -1035,6 +1228,40 @@ wss.on('connection', (ws, req) => {
           await ocReadyPromise;
           await ocFetch(`/pty/${targetId}`, { method: 'PUT', body: JSON.stringify({ size: { rows, cols } }) });
         })().catch(e => console.log(`  ! TERMINAL_RESIZE failed: ${e.message}`));
+        break;
+      }
+      case 'ROTATE_TOKEN': {
+        const oldKey = ws.deviceTokenKey;
+        const existing = oldKey && Object.hasOwn(deviceTokens, oldKey) ? deviceTokens[oldKey] : null;
+        if (!existing || existing.deviceId !== ws.deviceId) {
+          ws.send(JSON.stringify({ eventType: 'ERROR', payload: {
+            operation: 'ROTATE_TOKEN', message: 'Current device credential is invalid' } }));
+          break;
+        }
+        try {
+          const newToken = crypto.randomBytes(32).toString('hex');
+          const newKey = deviceTokenKey(newToken);
+          const replacement = Object.assign(Object.create(null), deviceTokens);
+          delete replacement[oldKey];
+          replacement[newKey] = { ...existing, issuedAt: Date.now() };
+          persistDeviceTokens(replacement); // Must succeed before changing memory or announcing token.
+          deviceTokens = replacement;
+          delete sessions[ws.deviceToken];
+          ws.deviceToken = newToken;
+          ws.deviceTokenKey = newKey;
+          for (const other of clients) {
+            if (other !== ws && other.deviceId === ws.deviceId) {
+              other.authenticated = false;
+              other.close(4001, 'device token rotated');
+            }
+          }
+          ws.send(JSON.stringify({ eventType: 'TOKEN_ROTATED', payload: {
+            deviceId: ws.deviceId, issuedToken: newToken } }));
+          appendAuditLog('token_rotated', { deviceId: ws.deviceId }, ws);
+        } catch (error) {
+          ws.send(JSON.stringify({ eventType: 'ERROR', payload: {
+            operation: 'ROTATE_TOKEN', message: 'Could not persist the new device credential' } }));
+        }
         break;
       }
       case 'REVOKE_TOKEN': {
@@ -1110,7 +1337,7 @@ wss.on('connection', (ws, req) => {
           break;
         }
         pushTerminalLine(`$ git ${gitCmd}`);
-        appendAuditLog('git_command', { command: gitCmd }, ws);
+        appendAuditLog('git_command', { command: args[0], argumentCount: args.length - 1 }, ws);
         const child = spawn('git', args, { cwd: activeWorkspace });
         let out = '';
         child.stdout.on('data', d => { out += d.toString(); });
@@ -1131,10 +1358,11 @@ wss.on('connection', (ws, req) => {
   ws.on('close', () => {
     clearTimeout(authTimer);
     clients.delete(ws);
+    releaseControllerIfIdle();
     console.log(`  Client disconnected: ${clientAddr}`);
   });
 
-  ws.on('error', () => clients.delete(ws));
+  ws.on('error', () => { clients.delete(ws); releaseControllerIfIdle(); });
 });
 
 const heartbeat = setInterval(() => {
