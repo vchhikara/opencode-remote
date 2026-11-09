@@ -96,6 +96,12 @@ data class FileNodeDto(
 
 /** Correlated file-wire protocol. Legacy peers still exchange bare strings. */
 @Serializable
+data class FetchFileTreeRequestDto(val requestId: String)
+
+@Serializable
+data class BridgeFileTreeDto(val requestId: String, val tree: FileNodeDto)
+
+@Serializable
 data class FetchFileRequestDto(val path: String, val requestId: String)
 
 @Serializable
