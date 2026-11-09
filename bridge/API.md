@@ -1,6 +1,6 @@
 # Bridge WebSocket API
 
-Protocol reference for `bridge/main.js`. The bridge exposes one WebSocket endpoint (`ws://<host>:<port>/ws`) using a flat JSON frame on both directions:
+Protocol reference for `bridge/main.js`. The bridge exposes one WebSocket endpoint (`ws://<host>:<port>/ws`, or `wss://` through an independently configured TLS reverse proxy) using a flat JSON frame on both directions:
 
 ```json
 { "eventType": "SOME_TYPE", "payload": { ... } }
@@ -19,7 +19,7 @@ Authenticates the socket. Must be the first frame sent.
 { "eventType": "CONNECT", "payload": { "deviceName": "string", "token": "string" } }
 ```
 
-- `token` is either a previously-issued per-device token, or (first time) the pairing secret (`BRIDGE_TOKEN`).
+- `token` is either an issued per-device token, or an unexpired and unspent startup pairing secret (`BRIDGE_TOKEN`). One pairing during the first 120 seconds is permitted by default.
 - On success: replies `CONNECTED`, then `WORKSPACE_LIST`, then pushes `GIT_STATUS`.
 - On failure (unrecognized token): closes the socket with code `4001`.
 
@@ -63,7 +63,7 @@ Sends a prompt to the persistent `opencode serve` session.
 ```json
 { "eventType": "ACCEPT_DIFF", "payload": "fileName" }
 ```
-`payload` is a bare filename string. Both just clear the bridge's local `pendingDiffs` bookkeeping for that file — neither calls back into opencode serve (there is no upstream per-hunk/partial-apply endpoint; see `ACCEPT_HUNK`/`REJECT_HUNK` below). No reply frame.
+`payload` is a bare filename string. Both just clear the bridge's local `pendingDiffs` bookkeeping for that file. The Android client labels the REJECT action **Dismiss review** rather than Revert — neither calls back into opencode serve (there is no upstream per-hunk/partial-apply endpoint; see `ACCEPT_HUNK`/`REJECT_HUNK` below). No reply frame.
 
 ### `LIST_SESSIONS`
 No payload. Replies `SESSION_LIST` (array) or `ERROR`.

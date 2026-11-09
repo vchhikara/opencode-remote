@@ -8,14 +8,19 @@ npm install
 npm start        # or: node main.js <port>
 ```
 
-The bridge prints an auth token and a pairing QR code on startup; scan it (or copy
-the token) into the Android app.
+The bridge prints a pairing QR code with the actual listening port. The startup
+pairing secret is accepted once within two minutes by default, after which
+new pairing requires a bridge restart. Already paired phones reconnect using
+device-specific tokens. `PAIRING_MAX_DEVICES` can explicitly allow several new
+devices in one window. Tokens are persisted as SHA-256 verifiers, not bearer
+tokens, in a file restricted to mode 0600.
 
 ## Reaching the bridge from off your LAN (Task 7.3)
 
-By default the bridge only accepts connections from devices on the same local
-network as the machine it runs on (mDNS/Bonjour discovery + a plain `ws://` socket,
-no TLS). Reaching it from anywhere else — a phone on mobile data, a different
+By default the bridge binds to all interfaces with a plain `ws://` socket.
+It does not enforce a local-network-only firewall. Restrict it using host
+firewall rules or `BRIDGE_HOST=127.0.0.1` with a private tunnel or reverse
+proxy. Never forward this plaintext port directly to the public Internet. Reaching it from anywhere else — a phone on mobile data, a different
 network — requires a relay/tunnel in front of it. This section documents two
 concrete, testable setups; it is not a code change, and does not claim a specific
 option is "done" beyond having a working documented procedure. If you later want a
@@ -63,10 +68,10 @@ share access, or your Android device can't run Tailscale).
    ```bash
    cloudflared tunnel run --url ws://127.0.0.1:<bridge-port> opencode-remote-bridge
    ```
-4. In the Android app's pairing screen, enter `bridge.yourdomain.com` as the host
-   (use `wss://` — Cloudflare Tunnel terminates TLS, so the app must connect
-   securely even though the bridge itself only speaks plain `ws://` locally) and
-   the bridge's auth token as usual.
+4. In the Android app's pairing screen, enter `bridge.yourdomain.com` as
+   the host, set port `443` and **Transport** to `wss`. The TLS proxy must
+   accept `/ws`. The bridge speaks `ws` on the private side. Never use the
+   `ws` mode to the public hostname.
 5. Verify from any network outside your LAN (e.g. mobile data with Wi-Fi off) that
    the app connects through the public hostname.
 
