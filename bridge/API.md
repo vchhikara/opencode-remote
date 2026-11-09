@@ -6,7 +6,7 @@ Protocol reference for `bridge/main.js`. The bridge exposes one WebSocket endpoi
 { "eventType": "SOME_TYPE", "payload": { ... } }
 ```
 
-`bridge/main.js`'s `switch` statement (inbound) and its `broadcast()`/`ws.send()` call sites (outbound) are the authoritative source of truth — this document is generated from reading that switch statement plus every `eventType:` string emitted in the file, cross-checked against the Kotlin DTOs in `opencode_remote_android_app/app/src/main/java/com/opencode/remote/data/dto/DtoModels.kt`. Where the two disagreed, the bridge won; no such case exists as of this pass.
+`bridge/main.js`'s `switch` statement (inbound) and its `broadcast()`/`ws.send()` call sites (outbound) are the authoritative source of truth — this document is generated from reading that switch statement plus every `eventType:` string emitted in the file, cross-checked against the Kotlin DTOs in `android-application/app/src/main/java/com/opencode/remote/data/dto/DtoModels.kt`. Where the two disagreed, the bridge won; no such case exists as of this pass.
 
 Until `CONNECT` succeeds, the only frame the bridge accepts is `CONNECT` itself — every other event type gets the socket closed (code `4001`).
 
@@ -21,10 +21,16 @@ Authenticates the socket. Must be the first frame sent.
 
 - `token` is either an issued per-device token, or an unexpired and unspent startup pairing secret (`BRIDGE_TOKEN`). One pairing during the first 120 seconds is permitted by default.
 - On success: replies `CONNECTED`, then `WORKSPACE_LIST`, then pushes `GIT_STATUS`.
-- On failure (unrecognized token): closes the socket with code `4001`.
+- On failure (unrecognized token): closes the socket with code `4001`; after ten failed attempts from one peer IP within 60 seconds, returns `4008` until the window expires. An unauthenticated socket is also closed after ten seconds.
 
 ### `FETCH_WORKSPACES`
 No payload. Replies with `WORKSPACE_LIST`.
+
+### `FETCH_RUNTIME_STATE`
+No payload. Authenticated clients receive a `RUNTIME_STATE` object containing `workspace`, `sessionId`, current tasks, pending diffs, in-memory permission/question requests and the active PTY ID. The Android client requests this immediately after a successful handshake. It is **not** a durable event journal or replay of terminal output.
+
+### `RELEASE_CONTROL`
+Releases the modifying-device lease if owned by the requesting device and no prompt is running. Replies `CONTROL_RELEASED`; otherwise `ERROR`. A single device may mutate the globally scoped workspace/session/PTY at a time. Other paired devices may still read state.
 
 ### `OPEN_WORKSPACE`
 Switches the active workspace and restarts `opencode serve` bound to it if already running.
@@ -43,7 +49,7 @@ Registers a directory in the workspace list without switching to it.
 Same path-confinement rule as `OPEN_WORKSPACE`. Replies with `ERROR` on failure; broadcasts `WORKSPACE_LIST` on success.
 
 ### `FETCH_FILE_TREE`
-No payload. Replies `FILE_TREE` with the active workspace's file tree, or `ERROR`.
+Legacy no-payload requests receive a bare `FILE_TREE` node. Correlated clients send `{"requestId":"uuid"}` and receive `{"requestId":"uuid","tree":{...}}`. The Android client rejects stale request IDs and clears the file tree when the workspace changes. Files are enumerated to a maximum depth of 24, a maximum of 10,000 entries and an 8 MiB JSON response. A limit violation returns `ERROR` with `operation: FETCH_FILE_TREE`.
 
 ### `FETCH_FILE`
 Legacy payloads are bare relative or absolute paths and receive bare-string `FILE_CONTENT` responses:
@@ -95,7 +101,7 @@ Bare string session id to fork from. Replies `SESSION_SWITCHED` (with the new fo
 ```json
 { "eventType": "FETCH_ALL_SESSIONS", "payload": { "limit": 50, "cursor": "opaque string, optional" } }
 ```
-Global, cross-workspace session list — read directly from OpenCode's own on-disk session database (`~/.local/share/opencode/opencode.db`), independent of `activeWorkspace` and of whether `opencode serve` is even running. `payload` is optional; both fields default (`limit` to 50, capped at 200). Replies `ALL_SESSIONS_LIST` or `ERROR` (e.g. the database is missing/unreadable). See `adr/0002-global-cross-workspace-session-search.md`.
+Global, cross-workspace session list — read directly from OpenCode's own on-disk session database (`~/.local/share/opencode/opencode.db`), independent of `activeWorkspace` and of whether `opencode serve` is even running. `payload` is optional; both fields default (`limit` to 50, capped at 200). New clients include an optional `requestId` string, echoed in `ALL_SESSIONS_LIST` and `ERROR`, so delayed responses cannot overwrite newer results. See `adr/0002-global-cross-workspace-session-search.md`.
 
 ### `OPEN_SESSION_GLOBAL`
 ```json
@@ -111,6 +117,9 @@ Bare string task id. Aborts the in-flight prompt generation server-side, removes
 
 ### `LIST_DEVICES`
 No payload. Replies `DEVICE_LIST` (never includes raw tokens).
+
+### `ROTATE_TOKEN`
+No payload. Authenticated controller may replace its own per-device token. Replies `TOKEN_ROTATED` containing `deviceId` and a fresh `issuedToken`; the old token is invalidated and the Android client must persist the replacement immediately. A failure to persist the new verifier returns `ERROR` and the old token remains valid. This is not a two-phase acknowledged rotation.
 
 ### `REVOKE_TOKEN`
 ```json
@@ -170,6 +179,15 @@ Any `eventType` not in the switch above (post-authentication) gets an `ERROR` re
 { "sessionId": "token", "deviceId": "uuid", "deviceName": "string", "issuedToken": "token (only on first pairing)" }
 ```
 Sent once per successful `CONNECT`.
+
+### `RUNTIME_STATE`
+Explicit snapshot reply to `FETCH_RUNTIME_STATE`, not an unsolicited frame to legacy clients.
+
+### `CONTROL_RELEASED`
+`{"deviceId":"uuid"}` acknowledgement of an idle controller-lease release.
+
+### `TOKEN_ROTATED`
+`{"deviceId":"uuid","issuedToken":"64-char hex"}`; the sensitive bearer is sent only to the requesting connection.
 
 ### `WORKSPACE_LIST`
 Array of `{ "id": "path", "name": "basename", "path": "path" }`. Sent after connect, `FETCH_WORKSPACES`, and broadcast on `OPEN_WORKSPACE`/`ADD_WORKSPACE`.
@@ -294,11 +312,11 @@ Reply to `OPEN_SESSION_GLOBAL`.
 ```json
 { "kind": "string", "detail": { } }
 ```
-General-purpose notification hook — currently a broadcast-only stand-in for real push delivery (no FCM credentials configured); fired on `permission_request`, prompt errors, and task completion.
+General-purpose live notification hook, with an incrementing `seq` on new frames. The bridge holds at most 100 notifications **in memory** and replays those missed by a previously paired device during a temporary disconnect. The queue is not persistent, delivery is not acknowledged, and this does **not** deliver notifications to terminated Android apps. FCM is not configured.
 
 ### `ERROR`
 ```json
-{ "message": "string" }
+{ "message": "string", "operation": "optional request type", "requestId": "optional correlation ID" }
 ```
 Sent for malformed JSON frames, unauthorized access, unknown event types, and per-handler failures (e.g. `OPEN_WORKSPACE` outside `WORKSPACE_ROOT`, `LIST_SESSIONS` failure).
 
