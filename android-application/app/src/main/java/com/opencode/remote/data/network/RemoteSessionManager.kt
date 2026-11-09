@@ -135,6 +135,7 @@ class RemoteSessionManager(
 
     private val _allSessionsLoading = MutableStateFlow(false)
     val allSessionsLoading: StateFlow<Boolean> = _allSessionsLoading.asStateFlow()
+    private var latestGlobalRequestId: String? = null
 
     // Tracks an in-flight OPEN_SESSION_GLOBAL separately from the fetch-list
     // loading/error state above — opening a session (which restarts opencode
@@ -330,8 +331,9 @@ class RemoteSessionManager(
                 "SESSION_LIST" -> frame.decodePayload<List<SessionDto>>(json)?.let { _sessions.value = it }
                 "SESSION_SWITCHED" -> frame.decodePayload<SessionSwitchedDto>(json)?.let { _activeSessionId.value = it.id }
                 "ALL_SESSIONS_LIST" -> {
-                    _allSessionsLoading.value = false
                     frame.decodePayload<AllSessionsListDto>(json)?.let {
+                        if (it.requestId != null && it.requestId != latestGlobalRequestId) return@let
+                        _allSessionsLoading.value = false
                         _allSessions.value = it.sessions
                         _allSessionsNextCursor.value = it.nextCursor
                         _allSessionsError.value = null
@@ -424,7 +426,8 @@ class RemoteSessionManager(
                     // attributed to it — surfaced via allSessionsError instead of
                     // only the generic lastError, since the dedicated screen needs
                     // an inline message, not a toast-style one-shot.
-                    if (_allSessionsLoading.value && (failure?.operation == "FETCH_ALL_SESSIONS"
+                    if (_allSessionsLoading.value && (failure?.requestId == null || failure.requestId == latestGlobalRequestId)
+                            && (failure?.operation == "FETCH_ALL_SESSIONS"
                                 || (failure?.operation == null && msg.startsWith("FETCH_ALL_SESSIONS failed:")))) {
                         _allSessionsLoading.value = false
                         _allSessionsError.value = msg
@@ -538,13 +541,15 @@ class RemoteSessionManager(
     fun fetchAllSessions(cursor: String? = null) {
         _allSessionsLoading.value = true
         _allSessionsError.value = null
+        val requestId = java.util.UUID.randomUUID().toString()
+        latestGlobalRequestId = requestId
         // A fresh list fetch is the user starting over — an earlier
         // OPEN_SESSION_GLOBAL failure must not keep GlobalSessionsScreen
         // stuck on its error state forever (found via on-device testing:
         // openGlobalSessionError otherwise never clears, so a screen that
         // hit an open error stays on it even after a successful re-fetch).
         _openGlobalSessionError.value = null
-        sendRaw("FETCH_ALL_SESSIONS", json.encodeToJsonElement(FetchAllSessionsPayload(cursor = cursor)))
+        sendRaw("FETCH_ALL_SESSIONS", json.encodeToJsonElement(FetchAllSessionsPayload(cursor = cursor, requestId = requestId)))
     }
 
     /** ADR-0002: opens a session found via [fetchAllSessions], switching
