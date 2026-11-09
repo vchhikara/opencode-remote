@@ -14,6 +14,10 @@ const MAX_WS_PAYLOAD = 16 * 1024 * 1024;
 const MAX_CLIENTS = 64;
 const MAX_BUFFERED_BYTES = 8 * 1024 * 1024;
 const AUTH_TIMEOUT_MS = 10000;
+const AUTH_FAILURE_LIMIT = 10;
+const AUTH_FAILURE_WINDOW_MS = 60_000;
+const MAX_AUTH_FAILURE_ENTRIES = 2048;
+const MAX_FILE_CONTENT_BYTES = 8 * 1024 * 1024;
 const OPCODE = process.env.OPCODE || 'opencode';
 const AUTH_TOKEN = process.env.BRIDGE_TOKEN || crypto.randomBytes(32).toString('hex');
 // Pairing credentials are usable only during startup's short window.
@@ -105,6 +109,28 @@ function timingSafeTokenEquals(a, b) {
   const bufA = Buffer.from(String(a || ''));
   const bufB = Buffer.from(String(b || ''));
   return bufA.length === bufB.length && bufA.length > 0 && crypto.timingSafeEqual(bufA, bufB);
+}
+
+// Rate-limit rejected authentication attempts by the socket's actual peer IP.
+// Ignore X-Forwarded-For because a client can forge it unless a trusted proxy is configured.
+const authFailures = new Map();
+function rejectAuthFrom(ip) {
+  const now = Date.now();
+  const previous = authFailures.get(ip);
+  const count = previous && now - previous.started < AUTH_FAILURE_WINDOW_MS ? previous.count + 1 : 1;
+  authFailures.delete(ip);
+  authFailures.set(ip, { count, started: count === 1 ? now : previous.started });
+  if (authFailures.size > MAX_AUTH_FAILURE_ENTRIES) authFailures.delete(authFailures.keys().next().value);
+  return count >= AUTH_FAILURE_LIMIT;
+}
+function isAuthBlocked(ip) {
+  const state = authFailures.get(ip);
+  if (!state) return false;
+  if (Date.now() - state.started >= AUTH_FAILURE_WINDOW_MS) {
+    authFailures.delete(ip);
+    return false;
+  }
+  return state.count >= AUTH_FAILURE_LIMIT;
 }
 
 const clients = new Set();
@@ -292,7 +318,9 @@ function pushChatMessage(msg, isUser, actionDesc, details) {
 // unchanged). Manual on-device background-push delivery is therefore NOT
 // claimed Done here — see PROGRESS.md.
 function notifyExternal(kind, detail) {
-  console.log(`  [notify] ${kind}: ${JSON.stringify(detail).slice(0, 200)}`);
+  // Notification details may include provider errors, prompts or local paths.
+  // Do not disclose them in plaintext bridge process logs.
+  console.log(`  [notify] ${kind}`);
   broadcast('NOTIFY', { kind, detail });
 }
 
@@ -670,6 +698,11 @@ const wss = new WebSocketServer({
 });
 
 wss.on('connection', (ws, req) => {
+  const clientAddr = req.socket.remoteAddress || 'unknown';
+  if (isAuthBlocked(clientAddr)) {
+    ws.close(4008, 'authentication rate limit');
+    return;
+  }
   if (clients.size >= MAX_CLIENTS) {
     ws.close(1013, 'server busy');
     return;
@@ -682,7 +715,6 @@ wss.on('connection', (ws, req) => {
     if (!ws.authenticated) ws.close(4001, 'authentication timeout');
   }, AUTH_TIMEOUT_MS);
   authTimer.unref();
-  const clientAddr = req.socket.remoteAddress;
   console.log(`  Client connected: ${clientAddr}`);
 
   ws.on('message', data => {
@@ -714,6 +746,7 @@ wss.on('connection', (ws, req) => {
       if (lookupKey && validDeviceRecord(lookupKey, existingDevice)) {
         ws.authenticated = true;
         clearTimeout(authTimer);
+        authFailures.delete(clientAddr);
         ws.deviceToken = suppliedToken;
         ws.deviceTokenKey = lookupKey;
         ws.deviceId = existingDevice.deviceId;
@@ -733,6 +766,7 @@ wss.on('connection', (ws, req) => {
         pairingsRemaining -= 1;
         ws.authenticated = true;
         clearTimeout(authTimer);
+        authFailures.delete(clientAddr);
         ws.deviceToken = token;
         ws.deviceTokenKey = deviceTokenKey(token);
         ws.deviceId = deviceId;
@@ -745,12 +779,12 @@ wss.on('connection', (ws, req) => {
       }
 
       // Neither a known device token nor the pairing secret.
-      ws.close(4001, 'unauthorized');
+      ws.close(rejectAuthFrom(clientAddr) ? 4008 : 4001, 'unauthorized');
       return;
     }
 
     if (!ws.authenticated) {
-      ws.close(4001, 'unauthorized');
+      ws.close(rejectAuthFrom(clientAddr) ? 4008 : 4001, 'unauthorized');
       return;
     }
 
@@ -824,7 +858,12 @@ wss.on('connection', (ws, req) => {
         }
         try {
           const fullPath = resolveInsideWorkspace(fp);
-          if (fs.statSync(fullPath).isFile()) {
+          const stat = fs.statSync(fullPath);
+          if (stat.isFile()) {
+            if (stat.size > MAX_FILE_CONTENT_BYTES) {
+              sendFileError('File exceeds the 8 MiB direct-response limit');
+              break;
+            }
             const content = fs.readFileSync(fullPath, 'utf-8');
             const response = structured ? { requestId, path: fp, content } : content;
             ws.send(JSON.stringify({ eventType: 'FILE_CONTENT', payload: response }));
