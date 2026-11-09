@@ -83,7 +83,7 @@ fun DiffReviewScreen(sessionManager: RemoteSessionManager, onDone: () -> Unit) {
             if (summaries.isEmpty()) {
                 Text("Nothing to review", style = OcType.pageTitle, color = c.ink)
                 Spacer(Modifier.height(6.dp))
-                Text("Changes the agent proposes land here, one row per file.", style = OcType.body, color = c.ink2)
+                Text("Files have already been changed. Review them here; dismissing does not undo edits.", style = OcType.body, color = c.ink2)
             } else {
                 Text(
                     "${Formatting.plural(totals.files, "file")}, +${totals.additions} / −${totals.deletions}",
@@ -97,7 +97,7 @@ fun DiffReviewScreen(sessionManager: RemoteSessionManager, onDone: () -> Unit) {
 
         if (summaries.isEmpty()) {
             Column(Modifier.weight(1f)) {
-                EmptyNote("All caught up", "When the agent edits a file you'll be able to keep or revert it here.")
+                EmptyNote("All caught up", "Review agent edits here. Dismissing a review does not undo file changes.")
             }
         } else {
             LazyColumn(Modifier.weight(1f).fillMaxWidth()) {
@@ -185,7 +185,7 @@ private fun DiffFileRow(
             Column {
                 PatchBlock(summary.parsed)
                 SegmentedBar(divider = c.rule) {
-                    SegmentCell("Revert this file", onRevert, height = 44.dp, color = c.ink2)
+                    SegmentCell("Dismiss review", onRevert, height = 44.dp, color = c.ink2)
                     SegmentCell("Keep this file", onKeep, height = 44.dp, color = c.goldInk, style = OcType.buttonStrong)
                 }
             }

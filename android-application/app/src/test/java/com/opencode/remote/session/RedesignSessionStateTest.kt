@@ -97,6 +97,6 @@ class RedesignSessionStateTest {
         incoming(createFrame("FILE_DIFF", BridgeFileDiffDto("a.txt", "patch"), json))
         manager.rejectDiff("a.txt")
         val kinds = manager.runEvents.value.map { it.kind }
-        assertEquals(listOf(RunEventKind.Diff, RunEventKind.DiffReverted), kinds)
+        assertEquals(listOf(RunEventKind.Diff, RunEventKind.DiffDismissed), kinds)
     }
 }

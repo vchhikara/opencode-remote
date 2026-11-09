@@ -17,12 +17,13 @@ class TokenStorage(context: Context) {
         EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
     )
 
-    fun saveCredentials(host: String, port: Int, token: String, deviceName: String) {
+    fun saveCredentials(host: String, port: Int, token: String, deviceName: String, scheme: String = "ws") {
         sharedPreferences.edit()
             .putString("host", host)
             .putInt("port", port)
             .putString("token", token)
             .putString("deviceName", deviceName)
+            .putString("scheme", scheme)
             .apply()
     }
 
@@ -32,12 +33,13 @@ class TokenStorage(context: Context) {
         val token = sharedPreferences.getString("token", null) ?: return null
         val deviceName = sharedPreferences.getString("deviceName", null) ?: return null
         
-        return Credentials(host, port, token, deviceName)
+        val scheme = sharedPreferences.getString("scheme", "ws").takeIf { it == "ws" || it == "wss" } ?: "ws"
+        return Credentials(host, port, token, deviceName, scheme)
     }
 
     fun clear() {
         sharedPreferences.edit().clear().apply()
     }
 
-    data class Credentials(val host: String, val port: Int, val token: String, val deviceName: String)
+    data class Credentials(val host: String, val port: Int, val token: String, val deviceName: String, val scheme: String = "ws")
 }

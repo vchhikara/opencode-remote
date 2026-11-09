@@ -47,6 +47,9 @@ class RemoteSessionManager(
     private val scope: CoroutineScope = CoroutineScope(Dispatchers.IO + Job()),
     private val clock: () -> Long = System::currentTimeMillis
 ) {
+    private var scheme: String = "ws"
+    private fun requireScheme(value: String): String = value.also { require(it == "ws" || it == "wss") }
+
     private val ws = WsClient(scope)
     val connectionState: StateFlow<ConnectionState> = ws.connectionState
 
@@ -201,16 +204,17 @@ class RemoteSessionManager(
     // no Android Context and stays free of storage concerns.
     var traceEnabled: Boolean = false
 
-    fun connect(host: String, port: Int, token: String, deviceName: String) {
+    fun connect(host: String, port: Int, token: String, deviceName: String, scheme: String = "ws") {
         this.host = host
         this.port = port
         this.token = token
         this.deviceName = deviceName
+        this.scheme = requireScheme(scheme)
         connect()
     }
 
     fun connect() {
-        ws.connect(host, port) session@{ markConnected ->
+        ws.connect(host, port, scheme) session@{ markConnected ->
             send(Frame.Text(json.encodeToString(createFrame("CONNECT", ConnectPayload(deviceName, token), json))))
 
             var handshakeOk = false
@@ -428,7 +432,7 @@ class RemoteSessionManager(
     fun rejectDiff(filePath: String) {
         sendString("REJECT_DIFF", filePath)
         setPendingDiffs { list -> list.filterNot { it.filePath == filePath } }
-        runLog.diffReverted(filePath)
+        runLog.diffDismissed(filePath)
     }
 
     /** decision: bridge forwards this string verbatim as {decision} to
