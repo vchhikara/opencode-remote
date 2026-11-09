@@ -78,7 +78,7 @@ OpenCode Remote exposes the parts of an agent workflow that actually matter on m
 | Native Android UI | ✅ | Partial | ❌ | ✅ |
 | Thumb-optimized action targets | ✅ | ❌ | ❌ | ✅ |
 | Self-hosted / Zero code relay | ✅ | ✅ | Partial | ❌ |
-| Background unblock alerts | ✅ | ❌ | Partial | ✅ |
+| Background unblock alerts | Partial (live WebSocket; replay on reconnect) | ❌ | Partial | ✅ |
 
 The Android client is built with **Kotlin + Jetpack Compose + Material 3** rather than wrapping OpenCode in a WebView.
 
@@ -452,11 +452,11 @@ The bridge does not silently convert OpenCode permission requests into approvals
 
 ### Device revocation
 
-Each paired phone has its own credential. Revoking one device does not invalidate every client.
+Each paired phone has its own credential. Revoking one device does not invalidate every client. In Paired devices, the current phone can also rotate its credential; the bridge issues a new token and invalidates the old one. Rotate only when the device can persist its replacement.
 
 ### Audit logging
 
-Terminal commands, Git operations, and permission decisions are appended to the local audit file. The audit log is intended for traceability. It is **not currently a cryptographically tamper-evident log**. A user or process with sufficient access to the host filesystem may modify it.
+Terminal-command digests/lengths, Git subcommand names, and permission decisions are appended to the local audit file; full terminal text, Git arguments and question-answer bodies are intentionally omitted to reduce credential leakage. The log is intended for traceability and is **not cryptographically tamper-evident**. A sufficiently privileged local process can modify it.
 
 ---
 
@@ -684,7 +684,7 @@ OpenCode's current interface exposes whole-file diff information rather than a f
 
 ### No bundled FCM infrastructure
 
-Firebase Cloud Messaging is not configured by default. FCM requires project-specific Firebase configuration and would introduce an additional external service. While the application is alive or backgrounded, it uses its WebSocket connection for live events.
+Firebase Cloud Messaging is not configured by default. FCM requires project-specific Firebase configuration and would introduce an additional external service. While the application has a WebSocket connection, it receives live events. The bridge keeps a bounded 100-event in-memory backlog for a previously paired device to receive on reconnect. There is **no guaranteed alert while Android is killed, suspended, disconnected, or the bridge restarts**.
 
 ### Host permissions still apply
 
