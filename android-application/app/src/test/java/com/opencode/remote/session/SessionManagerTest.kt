@@ -169,6 +169,22 @@ class SessionManagerTest {
     }
 
     @Test
+    fun testCorrelatedTreeResponsesIgnoreStaleRequestIds() = testScope.runTest {
+        val oldId = manager.fetchFileTree()
+        val newestId = manager.fetchFileTree()
+        val staleRoot = FileNodeDto("old", "", true, listOf(FileNodeDto("old.txt", "old.txt", false)))
+        val latestRoot = FileNodeDto("latest", "", true, listOf(FileNodeDto("latest.txt", "latest.txt", false)))
+        simulateIncomingMessage(createFrame("FILE_TREE", BridgeFileTreeDto(oldId, staleRoot), json))
+        assertTrue(manager.fileTree.value.isEmpty())
+        simulateIncomingMessage(createFrame("FILE_TREE", BridgeFileTreeDto(newestId, latestRoot), json))
+        assertEquals(latestRoot.children, manager.fileTree.value)
+
+        simulateIncomingMessage(createFrame("WORKSPACE_OPENED", OpenWorkspacePayload("/another"), json))
+        simulateIncomingMessage(createFrame("FILE_TREE", BridgeFileTreeDto(newestId, latestRoot), json))
+        assertTrue(manager.fileTree.value.isEmpty())
+    }
+
+    @Test
     fun testWorkspaceOpenedClearsStaleFileTree() = testScope.runTest {
         val children = listOf(FileNodeDto("file.txt", "/file.txt", false))
         val root = FileNodeDto("workspace", "", true, children)
