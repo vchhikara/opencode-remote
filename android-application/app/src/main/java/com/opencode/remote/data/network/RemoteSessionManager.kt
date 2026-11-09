@@ -203,6 +203,7 @@ class RemoteSessionManager(
     // Legacy server fallback. New replies carry path and requestId.
     private var pendingFileRequestPath: String? = null
     private var latestFileRequestId: String? = null
+    private var latestTreeRequestId: String? = null
 
     // Settings-gated raw frame trace, set by the caller (MainActivity, from
     // SettingsRepository) rather than read from DataStore in here — this class has
@@ -272,6 +273,7 @@ class RemoteSessionManager(
             when (frame.eventType) {
                 "RUNTIME_STATE" -> frame.decodePayload<RuntimeStateDto>(json)?.let { snapshot ->
                     if (_activeWorkspace.value != snapshot.workspace) {
+                        latestTreeRequestId = null
                         _fileTree.value = emptyList()
                         _fileContent.value = null
                     }
@@ -291,6 +293,7 @@ class RemoteSessionManager(
                 "WORKSPACE_LIST" -> frame.decodePayload<List<WorkspaceDto>>(json)?.let { _workspaces.value = it }
                 "WORKSPACE_OPENED" -> frame.decodePayload<OpenWorkspacePayload>(json)?.let {
                     _activeWorkspace.value = it.path
+                    latestTreeRequestId = null
                     _fileTree.value = emptyList() // stale tree belongs to the old workspace; re-fetch on next Files visit
                 }
                 "CHAT_MESSAGE" -> frame.decodePayload<BridgeChatMessageDto>(json)?.let { msg ->
@@ -344,6 +347,7 @@ class RemoteSessionManager(
                 "SESSION_OPENED" -> frame.decodePayload<SessionOpenedDto>(json)?.let {
                     _openGlobalSessionLoading.value = false
                     _activeWorkspace.value = it.worktree
+                    latestTreeRequestId = null
                     _fileTree.value = emptyList()
                     _activeSessionId.value = it.id
                 }
@@ -365,7 +369,17 @@ class RemoteSessionManager(
                 // Bridge sends one root FileNodeDto (see bridge/main.js FETCH_FILE_TREE), not
                 // a list — the explorer renders the workspace's children flat, without a
                 // wrapping root row (see flattenTree in FileTreeRows.kt).
-                "FILE_TREE" -> frame.decodePayload<FileNodeDto>(json)?.let { _fileTree.value = it.children ?: emptyList() }
+                "FILE_TREE" -> {
+                    val correlated = frame.decodePayload<BridgeFileTreeDto>(json)
+                    if (correlated != null) {
+                        if (correlated.requestId == latestTreeRequestId) {
+                            _fileTree.value = correlated.tree.children ?: emptyList()
+                        }
+                    } else {
+                        // Compatibility with pre-correlation bridges.
+                        frame.decodePayload<FileNodeDto>(json)?.let { _fileTree.value = it.children ?: emptyList() }
+                    }
+                }
                 "FILE_CONTENT" -> {
                     val correlated = frame.decodePayload<BridgeFileContentDto>(json)
                     if (correlated != null) {
@@ -460,7 +474,12 @@ class RemoteSessionManager(
      *  WORKSPACE_LIST, which [workspaces] already reflects. */
     fun addWorkspace(path: String) = sendString("ADD_WORKSPACE", path)
 
-    fun fetchFileTree() = sendRaw("FETCH_FILE_TREE")
+    fun fetchFileTree(): String {
+        val id = java.util.UUID.randomUUID().toString()
+        latestTreeRequestId = id
+        sendRaw("FETCH_FILE_TREE", json.encodeToJsonElement(FetchFileTreeRequestDto(id)))
+        return id
+    }
 
     fun fetchFile(path: String): String {
         val id = java.util.UUID.randomUUID().toString()
