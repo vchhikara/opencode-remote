@@ -135,6 +135,22 @@ function isAuthBlocked(ip) {
   return state.count >= AUTH_FAILURE_LIMIT;
 }
 
+// Best-effort short disconnect catch-up for previously paired devices.
+// Not an acknowledgement-backed durable push service.
+const notificationHistory = [];
+const deliveredNotificationSeq = new Map();
+let notificationSeq = 0;
+const MAX_NOTIFICATION_HISTORY = 100;
+function replayNotifications(ws) {
+  const last = deliveredNotificationSeq.get(ws.deviceId) || 0;
+  for (const payload of notificationHistory) {
+    if (payload.seq <= last) continue;
+    if (ws.readyState !== WebSocket.OPEN || ws.bufferedAmount > MAX_BUFFERED_BYTES) return;
+    ws.send(JSON.stringify({ eventType: 'NOTIFY', payload }));
+    deliveredNotificationSeq.set(ws.deviceId, payload.seq);
+  }
+}
+
 const clients = new Set();
 // One controlling device at a time. Multiple devices can observe read-only state,
 // but cannot concurrently redirect the shared OpenCode server workspace/session.
@@ -345,7 +361,16 @@ function notifyExternal(kind, detail) {
   // Notification details may include provider errors, prompts or local paths.
   // Do not disclose them in plaintext bridge process logs.
   console.log(`  [notify] ${kind}`);
-  broadcast('NOTIFY', { kind, detail });
+  const payload = { kind, detail, seq: ++notificationSeq };
+  notificationHistory.push(payload);
+  if (notificationHistory.length > MAX_NOTIFICATION_HISTORY) notificationHistory.shift();
+  broadcast('NOTIFY', payload);
+  for (const ws of clients) {
+    if (ws.authenticated && ws.readyState === WebSocket.OPEN
+        && ws.bufferedAmount <= MAX_BUFFERED_BYTES) {
+      deliveredNotificationSeq.set(ws.deviceId, notificationSeq);
+    }
+  }
 }
 
 function pushFileDiff(fileName, diffText) {
@@ -804,6 +829,7 @@ wss.on('connection', (ws, req) => {
         sessions[suppliedToken] = { name: deviceName, workspace: activeWorkspace };
         ws.send(JSON.stringify({ eventType: 'CONNECTED', payload: { sessionId: suppliedToken, deviceId: existingDevice.deviceId, deviceName } }));
         ws.send(JSON.stringify({ eventType: 'WORKSPACE_LIST', payload: workspaces }));
+        replayNotifications(ws);
         pushGitStatus(ws);
         return;
       }
@@ -821,9 +847,12 @@ wss.on('connection', (ws, req) => {
         ws.deviceTokenKey = deviceTokenKey(token);
         ws.deviceId = deviceId;
         ws.deviceName = deviceName;
+        // Newly paired devices should not see earlier notifications.
+        deliveredNotificationSeq.set(deviceId, notificationSeq);
         sessions[token] = { name: deviceName, workspace: activeWorkspace };
         ws.send(JSON.stringify({ eventType: 'CONNECTED', payload: { sessionId: token, deviceId, deviceName, issuedToken: token } }));
         ws.send(JSON.stringify({ eventType: 'WORKSPACE_LIST', payload: workspaces }));
+        replayNotifications(ws);
         pushGitStatus(ws);
         return;
       }
