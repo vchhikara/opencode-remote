@@ -15,6 +15,9 @@ import java.util.UUID
 data class ConnectPayload(val deviceName: String, val token: String)
 
 @Serializable
+data class TokenRotatedPayload(val deviceId: String, val issuedToken: String)
+
+@Serializable
 data class ConnectedPayload(
     val sessionId: String,
     val deviceName: String,
