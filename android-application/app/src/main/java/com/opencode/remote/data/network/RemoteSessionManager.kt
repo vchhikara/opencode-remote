@@ -240,6 +240,8 @@ class RemoteSessionManager(
                             }
                             handshakeOk = true
                             markConnected()
+                            // The bridge returns a fresh snapshot of volatile state on every reconnect.
+                            send(Frame.Text(json.encodeToString(WebSocketFrame("FETCH_RUNTIME_STATE"))))
                         }
                         "ERROR" -> {
                             val err = wsFrame.decodePayload<ErrorPayload>(json)
@@ -267,6 +269,18 @@ class RemoteSessionManager(
             if (traceEnabled) Log.d(TRACE_TAG, "<< $text")
             val frame = json.decodeFromString<WebSocketFrame>(text)
             when (frame.eventType) {
+                "RUNTIME_STATE" -> frame.decodePayload<RuntimeStateDto>(json)?.let { snapshot ->
+                    if (_activeWorkspace.value != snapshot.workspace) {
+                        _fileTree.value = emptyList()
+                        _fileContent.value = null
+                    }
+                    _activeWorkspace.value = snapshot.workspace
+                    _activeSessionId.value = snapshot.sessionId
+                    _tasks.value = snapshot.tasks.associateBy { it.id }
+                    setPendingDiffs { snapshot.diffs.map { FileDiffDto(it.fileName, it.diffText) } }
+                    _pendingPermission.value = snapshot.permissions.firstOrNull { acceptsSession(it.sessionId) }
+                    _pendingQuestion.value = snapshot.questions.firstOrNull { acceptsSession(it.sessionId) }
+                }
                 "WORKSPACE_LIST" -> frame.decodePayload<List<WorkspaceDto>>(json)?.let { _workspaces.value = it }
                 "WORKSPACE_OPENED" -> frame.decodePayload<OpenWorkspacePayload>(json)?.let {
                     _activeWorkspace.value = it.path
