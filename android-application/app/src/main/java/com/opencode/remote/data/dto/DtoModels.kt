@@ -113,6 +113,18 @@ data class FileDiffDto(
 
 /** Exact wire shape of the bridge's FILE_DIFF payload (main.js pushFileDiff). */
 @Serializable
+data class RuntimeStateDto(
+    val workspace: String,
+    val sessionId: String? = null,
+    val tasks: List<TaskDto> = emptyList(),
+    val diffs: List<BridgeFileDiffDto> = emptyList(),
+    val permissions: List<PermissionRequestDto> = emptyList(),
+    val questions: List<QuestionRequestDto> = emptyList(),
+    val terminalPtyId: String? = null
+)
+
+/** Wire snapshot replaces stale in-memory state after a WebSocket reconnect. */
+@Serializable
 data class BridgeFileDiffDto(val fileName: String, val diffText: String)
 
 /** Typed view of [TaskDto.status] for exhaustive `when`s in UI code, instead of raw
