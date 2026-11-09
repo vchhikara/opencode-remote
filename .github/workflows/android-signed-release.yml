@@ -1,0 +1,73 @@
+name: Build signed Android release (manual)
+
+# Intentional manual-only signing. Never publishes to Google Play.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  signed-aab:
+    name: Build and verify signed release AAB
+    runs-on: ubuntu-latest
+    environment: android-release
+    defaults:
+      run:
+        working-directory: android-application
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Check required release credentials are configured
+        env:
+          UPLOAD_KEYSTORE: ${{ secrets.RELEASE_KEYSTORE_BASE64 }}
+          STORE_PASSWORD: ${{ secrets.RELEASE_STORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.RELEASE_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.RELEASE_KEY_PASSWORD }}
+        run: |
+          test -n "$UPLOAD_KEYSTORE" || { echo 'Missing release keystore secret'; exit 1; }
+          test -n "$STORE_PASSWORD" || { echo 'Missing store password secret'; exit 1; }
+          test -n "$KEY_ALIAS" || { echo 'Missing key alias secret'; exit 1; }
+          test -n "$KEY_PASSWORD" || { echo 'Missing key password secret'; exit 1; }
+
+      - name: Build unsigned release bundle
+        run: |
+          chmod +x ./gradlew
+          ./gradlew :app:bundleRelease --no-daemon --console=plain
+
+      - name: Sign and verify release bundle
+        env:
+          UPLOAD_KEYSTORE: ${{ secrets.RELEASE_KEYSTORE_BASE64 }}
+          STORE_PASSWORD: ${{ secrets.RELEASE_STORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.RELEASE_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.RELEASE_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          umask 077
+          KEY_FILE="$RUNNER_TEMP/android-upload-key.jks"
+          SIGNED_FILE="$RUNNER_TEMP/opencode-remote-signed.aab"
+          trap 'rm -f "$KEY_FILE"' EXIT
+          printf '%s' "$UPLOAD_KEYSTORE" | base64 --decode > "$KEY_FILE"
+          jarsigner \
+            -keystore "$KEY_FILE" \
+            -storepass:env STORE_PASSWORD \
+            -keypass:env KEY_PASSWORD \
+            -signedjar "$SIGNED_FILE" \
+            app/build/outputs/bundle/release/app-release.aab \
+            "$KEY_ALIAS"
+          jarsigner -verify -strict -verbose -certs "$SIGNED_FILE" > "$RUNNER_TEMP/signing-verification.txt"
+          test -s "$SIGNED_FILE"
+          mkdir -p app/build/outputs/signed
+          install -m 0600 "$SIGNED_FILE" app/build/outputs/signed/opencode-remote-signed.aab
+
+      - name: Upload signed AAB for manual review
+        uses: actions/upload-artifact@v4
+        with:
+          name: opencode-remote-signed-aab
+          path: android-application/app/build/outputs/signed/opencode-remote-signed.aab
+          if-no-files-found: error
+          retention-days: 7
