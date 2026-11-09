@@ -1012,16 +1012,24 @@ wss.on('connection', (ws, req) => {
         break;
       }
       case 'FETCH_ALL_SESSIONS': {
-        // Global, cross-workspace session list — read directly from
-        // OpenCode's own on-disk DB (sessionStore.js), independent of
-        // activeWorkspace or whether opencode serve is even running. See
-        // adr/0002-global-cross-workspace-session-search.md.
+        // Read OpenCode's persisted cross-workspace session DB. Echo the
+        // request ID so a late page cannot replace a newer search result.
+        const opts = (payload && typeof payload === 'object' && !Array.isArray(payload)) ? payload : {};
+        const requestId = opts.requestId;
+        if (requestId !== undefined && (typeof requestId !== 'string'
+            || requestId.length < 1 || requestId.length > 128)) {
+          ws.send(JSON.stringify({ eventType: 'ERROR', payload: {
+            message: 'Invalid global-session request ID', operation: 'FETCH_ALL_SESSIONS' } }));
+          break;
+        }
         try {
-          const opts = (payload && typeof payload === 'object') ? payload : {};
           const result = listAllSessions({ limit: opts.limit, cursor: opts.cursor });
-          ws.send(JSON.stringify({ eventType: 'ALL_SESSIONS_LIST', payload: result }));
+          ws.send(JSON.stringify({ eventType: 'ALL_SESSIONS_LIST', payload: {
+            ...result, ...(requestId ? { requestId } : {}) } }));
         } catch (e) {
-          ws.send(JSON.stringify({ eventType: 'ERROR', payload: { message: `FETCH_ALL_SESSIONS failed: ${e.message}`, operation: 'FETCH_ALL_SESSIONS' } }));
+          ws.send(JSON.stringify({ eventType: 'ERROR', payload: {
+            message: `FETCH_ALL_SESSIONS failed: ${e.message}`, operation: 'FETCH_ALL_SESSIONS',
+            ...(requestId ? { requestId } : {}) } }));
         }
         break;
       }
