@@ -77,6 +77,44 @@ class SessionManagerTest {
     }
 
     @Test
+    fun testReconnectSnapshotReplacesStaleVolatileState() = testScope.runTest {
+        simulateIncomingMessage(createFrame("WORKSPACE_OPENED", OpenWorkspacePayload("/old"), json))
+        simulateIncomingMessage(createFrame("SESSION_SWITCHED", SessionSwitchedDto("old-session"), json))
+        simulateIncomingMessage(createFrame("TASK_UPDATED", TaskDto("old-task", "stale", null, "Running"), json))
+        simulateIncomingMessage(createFrame("FILE_DIFF", BridgeFileDiffDto("old.txt", "stale patch"), json))
+        simulateIncomingMessage(createFrame("PERMISSION_REQUEST",
+            PermissionRequestDto("old-permission", sessionId = "old-session"), json))
+        simulateIncomingMessage(createFrame("QUESTION_REQUEST",
+            QuestionRequestDto("old-question", sessionId = "old-session"), json))
+        val newTask = TaskDto("new-task", "fresh", null, "Running")
+        val snapshot = RuntimeStateDto(
+            workspace = "/new",
+            sessionId = "current-session",
+            tasks = listOf(newTask),
+            diffs = listOf(BridgeFileDiffDto("new.txt", "fresh patch")),
+            permissions = listOf(
+                PermissionRequestDto("foreign-permission", sessionId = "other-session"),
+                PermissionRequestDto("current-permission", sessionId = "current-session")
+            ),
+            questions = listOf(QuestionRequestDto("current-question", sessionId = "current-session"))
+        )
+        simulateIncomingMessage(createFrame("RUNTIME_STATE", snapshot, json))
+        assertEquals("/new", manager.activeWorkspace.value)
+        assertEquals("current-session", manager.activeSessionId.value)
+        assertEquals(mapOf("new-task" to newTask), manager.tasks.value)
+        assertEquals(listOf(FileDiffDto("new.txt", "fresh patch")), manager.pendingDiffs.value)
+        assertEquals("current-permission", manager.pendingPermission.value?.permissionId)
+        assertEquals("current-question", manager.pendingQuestion.value?.questionId)
+
+        simulateIncomingMessage(createFrame("RUNTIME_STATE",
+            RuntimeStateDto(workspace = "/new", sessionId = "current-session"), json))
+        assertTrue(manager.tasks.value.isEmpty())
+        assertTrue(manager.pendingDiffs.value.isEmpty())
+        assertEquals(null, manager.pendingPermission.value)
+        assertEquals(null, manager.pendingQuestion.value)
+    }
+
+    @Test
     fun testMultiItemWorkspaceListIsFullyReflected() = testScope.runTest {
         // Task 6.2.1: WorkspaceListScreen must render every entry the bridge
         // sends, not assume a single-item list.
