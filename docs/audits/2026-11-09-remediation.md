@@ -8,7 +8,7 @@
 - Working directory: `/home/vipul/My Projects/opencode-remote-remediation-2026-11`.
 - The user's original `main` worktree contains a pre-existing change to `bridge/main.js` and an untracked `.opencode-remote-session.json`. Neither was modified or reset.
 - Machine: HPpavilionpro, Ubuntu Linux; Node v24.20.0 via nvm, OpenJDK 17.0.20.1, Android SDK 36.1 and Gradle 9.6.
-- No ADB emulator or device connected, and no network-accessible production bridge was tested. No release publication or merge to `main`.
+- An Android API 36 emulator smoke test completed in an isolated QA package. The connected personal POCO M2 Pro (API 31) was not modified. No production bridge was tested, and no release was published or merged to `main`.
 
 ## Verification evidence
 
@@ -20,8 +20,8 @@
 | `./gradlew :app:bundleRelease :app:processReleaseMainManifest --console=plain --no-daemon` | **PASS**, log `/tmp/opencode-remediation-release.log` |
 | `jarsigner -verify -verbose app-release.aab` | **jar is unsigned**; no silent debug-key signing |
 | `node --check bridge/main.js`, `git diff --check` | **PASS** |
-| ADB device and emulator QA | **UNAVAILABLE**: `adb devices -l` returned no connected devices |
-| Hosted GitHub Actions (run 42654877531, commit `db27c0b`) | **PASS: 4/4 jobs** (bridge, Android debug tests/build, Android release/compliance, OWASP scan). Additional correlation commit needs its own CI verification |
+| Android API 36 emulator QA | **PARTIAL PASS**: isolated audit APK installed; pairing screen, camera permission, QR scanner and Close flow exercised; process survived and no app FATAL EXCEPTION appeared in logcat. An initial emulator System UI ANR recovered after Wait |
+| Hosted GitHub Actions (run 42657139704, commit `35aff59`) | **PASS: 4/4 jobs** (bridge, Android build/tests, Android release/compliance, OWASP dependency scan). Earlier run 42654877531 also passed |
 | TLS proxy / cellular handoff / multiple physical devices | **NOT RUN** |
 
 Built outputs remain on HPpavilionpro under `android-application/app/build/outputs/apk/debug/app-debug.apk` and `android-application/app/build/outputs/bundle/release/app-release.aab`. The release AAB is **unsigned** and is not a distributable production build.
@@ -70,3 +70,15 @@ Read and applied installed Android Engineering Suite audit, security/privacy, bu
 ## Rollback / safety
 
 All work is isolated in `fix/audit-remediation-2026-11` and can be reviewed independently. Original `main` and pre-existing local modifications are retained. Do not revert SEC-01 to address connection issues. If a token store is inconsistent, restore a verified backup or perform deliberate re-pairing; do not weaken the verifier lookup. The branch has not been merged or published as an Android release.
+
+## API 36 emulator smoke-test evidence
+
+- Emulator: `medium_phone`, serial `emulator-5554`, Android API 36, x86_64, Android Emulator 37.1.11.
+- The pre-existing `com.opencode.remote` application on the AVD has versionCode 11. Installing the audited versionCode 9 normally was correctly refused as a downgrade. Nothing was uninstalled or downgraded.
+- Built and installed a temporary debug variant using `applicationIdSuffix = ".audit"`, package `com.opencode.remote.audit`. The temporary Gradle source edit was automatically restored before committing this report.
+- `adb install` succeeded. The launcher resolved `com.opencode.remote.MainActivity`. `am start` succeeded, activity was displayed, and the app process remained alive.
+- The initial UI hierarchy was obscured by an Android System UI not-responding dialog, which recovered after choosing Wait. Thereafter the pairing screen showed host, port, WS/WSS transport, token and device fields.
+- Tapping Scan QR produced the Android camera permission dialog. Granting permission opened the scanner. Close returned to pairing. App PID remained alive, and no app FATAL EXCEPTION was found in the sampled logcat.
+- Screenshot: [API 36 pairing screen](assets/2026-11-09-api36-pairing.png). Additional captured hierarchies and screenshots remain on HPpavilionpro at `/tmp/opencode-remote-audit-qa/`.
+- Emulator was stopped via `adb emu kill` after testing. The personal POCO M2 Pro connected through USB was not used or modified.
+- Scope limitation: no actual QR decoding, bridge pairing, secure TLS endpoint, network handoff, multi-device session concurrency, process-relaunch or performance profiling was verified. This was a UI smoke test, not end-to-end device certification.
