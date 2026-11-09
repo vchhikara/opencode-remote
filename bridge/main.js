@@ -902,11 +902,26 @@ wss.on('connection', (ws, req) => {
         break;
       }
       case 'FETCH_FILE_TREE': {
+        // Correlate only modern structured requests. Bare legacy frames keep the
+        // original FILE_TREE payload shape for backwards compatibility.
+        const structured = payload !== null && typeof payload === 'object' && !Array.isArray(payload);
+        const requestId = structured ? payload.requestId : null;
+        if (structured && (typeof requestId !== 'string' || requestId.length < 1 || requestId.length > 128)) {
+          ws.send(JSON.stringify({ eventType: 'ERROR', payload: {
+            operation: 'FETCH_FILE_TREE', message: 'Invalid request ID' } }));
+          break;
+        }
         try {
           const tree = fileTreeToJson(activeWorkspace, path.basename(activeWorkspace));
-          ws.send(JSON.stringify({ eventType: 'FILE_TREE', payload: tree }));
+          const reply = structured ? { requestId, tree } : tree;
+          if (Buffer.byteLength(JSON.stringify(reply)) > MAX_FILE_CONTENT_BYTES) {
+            throw new Error('File tree exceeds the 8 MiB direct-response limit');
+          }
+          ws.send(JSON.stringify({ eventType: 'FILE_TREE', payload: reply }));
         } catch (e) {
-          ws.send(JSON.stringify({ eventType: 'ERROR', payload: { message: e.message } }));
+          ws.send(JSON.stringify({ eventType: 'ERROR', payload: {
+            operation: 'FETCH_FILE_TREE', message: e.message,
+            ...(structured ? { requestId } : {}) } }));
         }
         break;
       }
