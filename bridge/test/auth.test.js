@@ -85,7 +85,7 @@ test('two devices pairing with the same secret get different tokens and both aut
   const port = 44000 + Math.floor(Math.random() * 2000);
   const pairingToken = 'pairingsecret2';
   const wsRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'bridge-auth8b-'));
-  const child = startBridge(port, pairingToken, wsRoot);
+  const child = startBridge(port, pairingToken, wsRoot, { PAIRING_MAX_DEVICES: '2' });
   try {
     await waitForPort(port);
 
@@ -130,7 +130,7 @@ test('REVOKE_TOKEN closes the revoked device and rejects it on reconnect (Task 8
   const port = 44000 + Math.floor(Math.random() * 2000);
   const pairingToken = 'pairingsecret3';
   const wsRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'bridge-auth8c-'));
-  const child = startBridge(port, pairingToken, wsRoot);
+  const child = startBridge(port, pairingToken, wsRoot, { PAIRING_MAX_DEVICES: '2' });
   try {
     await waitForPort(port);
 
