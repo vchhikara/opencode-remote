@@ -134,6 +134,24 @@ function isAuthBlocked(ip) {
 }
 
 const clients = new Set();
+// One controlling device at a time. Multiple devices can observe read-only state,
+// but cannot concurrently redirect the shared OpenCode server workspace/session.
+const MUTATING_ACTIONS = new Set([
+  'OPEN_WORKSPACE', 'ADD_WORKSPACE', 'OPEN_SESSION_GLOBAL', 'SWITCH_SESSION',
+  'NEW_SESSION', 'FORK_SESSION', 'PROMPT', 'TERMINAL', 'TERMINAL_RESIZE',
+  'PERMISSION_REPLY', 'QUESTION_REPLY', 'QUESTION_REJECT', 'GIT', 'KILL_TASK',
+  'ACCEPT_DIFF', 'REJECT_DIFF', 'REVOKE_TOKEN'
+]);
+const CONTEXT_SWITCH_ACTIONS = new Set([
+  'OPEN_WORKSPACE', 'OPEN_SESSION_GLOBAL', 'SWITCH_SESSION',
+  'NEW_SESSION', 'FORK_SESSION', 'PROMPT'
+]);
+let controllerDeviceId = null;
+function releaseControllerIfIdle() {
+  if (Object.keys(tasks).length > 0) return;
+  if (![...clients].some(client => client.authenticated && client.readyState === WebSocket.OPEN
+      && client.deviceId === controllerDeviceId)) controllerDeviceId = null;
+}
 let sessions = {};
 let activeWorkspace = process.cwd();
 let pendingDiffs = {};
@@ -653,6 +671,7 @@ async function runPrompt(prompt) {
   } finally {
     delete tasks[taskId];
     pushTaskRemoved(taskId);
+    releaseControllerIfIdle();
     notifyExternal('task_completed', { taskId });
     pushAgentState('Idle');
   }
@@ -809,6 +828,30 @@ wss.on('connection', (ws, req) => {
     if (!ws.authenticated) {
       ws.close(rejectAuthFrom(clientAddr) ? 4008 : 4001, 'unauthorized');
       return;
+    }
+
+    if (eventType === 'RELEASE_CONTROL') {
+      if (controllerDeviceId === ws.deviceId && Object.keys(tasks).length === 0) {
+        controllerDeviceId = null;
+        ws.send(JSON.stringify({ eventType: 'CONTROL_RELEASED', payload: { deviceId: ws.deviceId } }));
+      } else {
+        ws.send(JSON.stringify({ eventType: 'ERROR', payload: {
+          operation: 'RELEASE_CONTROL', message: 'No idle control lease owned by this device' } }));
+      }
+      return;
+    }
+    if (MUTATING_ACTIONS.has(eventType)) {
+      if (controllerDeviceId !== null && controllerDeviceId !== ws.deviceId) {
+        ws.send(JSON.stringify({ eventType: 'ERROR', payload: {
+          operation: eventType, message: 'Another device currently controls this bridge' } }));
+        return;
+      }
+      if (CONTEXT_SWITCH_ACTIONS.has(eventType) && Object.keys(tasks).length > 0) {
+        ws.send(JSON.stringify({ eventType: 'ERROR', payload: {
+          operation: eventType, message: 'Wait for the running prompt to finish before switching context' } }));
+        return;
+      }
+      controllerDeviceId = ws.deviceId;
     }
 
     switch (eventType) {
@@ -1202,10 +1245,11 @@ wss.on('connection', (ws, req) => {
   ws.on('close', () => {
     clearTimeout(authTimer);
     clients.delete(ws);
+    releaseControllerIfIdle();
     console.log(`  Client disconnected: ${clientAddr}`);
   });
 
-  ws.on('error', () => clients.delete(ws));
+  ws.on('error', () => { clients.delete(ws); releaseControllerIfIdle(); });
 });
 
 const heartbeat = setInterval(() => {
