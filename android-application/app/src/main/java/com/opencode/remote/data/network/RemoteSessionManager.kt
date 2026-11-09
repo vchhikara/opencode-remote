@@ -266,8 +266,9 @@ class RemoteSessionManager(
 
     internal suspend fun handleIncomingMessage(text: String) {
         try {
-            if (traceEnabled) Log.d(TRACE_TAG, "<< $text")
             val frame = json.decodeFromString<WebSocketFrame>(text)
+            // Never log wire payloads: frames may carry bearer tokens, prompts and file data.
+            if (traceEnabled) Log.d(TRACE_TAG, "<< ${frame.eventType}")
             when (frame.eventType) {
                 "RUNTIME_STATE" -> frame.decodePayload<RuntimeStateDto>(json)?.let { snapshot ->
                     if (_activeWorkspace.value != snapshot.workspace) {
@@ -280,6 +281,12 @@ class RemoteSessionManager(
                     setPendingDiffs { snapshot.diffs.map { FileDiffDto(it.fileName, it.diffText) } }
                     _pendingPermission.value = snapshot.permissions.firstOrNull { acceptsSession(it.sessionId) }
                     _pendingQuestion.value = snapshot.questions.firstOrNull { acceptsSession(it.sessionId) }
+                }
+                "TOKEN_ROTATED" -> frame.decodePayload<TokenRotatedPayload>(json)?.let {
+                    if (it.deviceId == _currentDeviceId.value) {
+                        token = it.issuedToken
+                        _issuedToken.value = it.issuedToken
+                    }
                 }
                 "WORKSPACE_LIST" -> frame.decodePayload<List<WorkspaceDto>>(json)?.let { _workspaces.value = it }
                 "WORKSPACE_OPENED" -> frame.decodePayload<OpenWorkspacePayload>(json)?.let {
@@ -425,7 +432,7 @@ class RemoteSessionManager(
         scope.launch {
             try {
                 val encoded = json.encodeToString(WebSocketFrame(eventType, payload))
-                if (traceEnabled) Log.d(TRACE_TAG, ">> $encoded")
+                if (traceEnabled) Log.d(TRACE_TAG, ">> $eventType")
                 ws.send(encoded)
             } catch (e: Exception) {
                 Log.e("RemoteSessionManager", "Failed to send $eventType", e)
@@ -563,6 +570,12 @@ class RemoteSessionManager(
     /** Task 8.2.2: lists paired devices (never exposes raw tokens — see
      *  [DeviceDto]); response lands in [devices]. */
     fun listDevices() = sendRaw("LIST_DEVICES")
+
+    /** Replace this phone's credential without changing another device's token. */
+    fun rotateOwnToken() = sendRaw("ROTATE_TOKEN")
+
+    /** Release the single-controller lease so another paired device may mutate state. */
+    fun releaseControl() = sendRaw("RELEASE_CONTROL")
 
     /** Task 8.2.1/8.2.2: revokes a paired device's token, closing its live
      *  connection (if any) and rejecting any future reconnect with it. */
