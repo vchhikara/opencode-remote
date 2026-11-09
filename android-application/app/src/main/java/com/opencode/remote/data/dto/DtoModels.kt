@@ -268,7 +268,8 @@ data class FetchAllSessionsPayload(val limit: Int? = null, val cursor: String? =
 @Serializable
 data class AllSessionsListDto(
     val sessions: List<GlobalSessionDto>,
-    val nextCursor: String? = null
+    val nextCursor: String? = null,
+    val requestId: String? = null
 )
 
 /** Outbound wire shape for RemoteSessionManager.openGlobalSession's
