@@ -161,3 +161,25 @@ test('explicit runtime snapshot provides the current workspace and empty queues'
     await stopBridge(child);
   }
 });
+
+test('non-string event types cannot terminate the bridge process', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'bridge-malformed-type-'));
+  const port = await freePort();
+  const child = startBridge(port, 'pairing-secret', root);
+  try {
+    await waitForPort(port);
+    const malformed = connectClient(port);
+    await new Promise(resolve => malformed.once('open', resolve));
+    const closed = waitForClose(malformed);
+    malformed.send(JSON.stringify({ eventType: {
+      toString: null, valueOf: null
+    }, payload: null }));
+    assert.equal(await closed, 1003);
+    assert.equal(child.exitCode, null, 'bridge must remain alive');
+    const good = await authenticate(port, 'pairing-secret');
+    assert.equal((await nextMessage(good.ws)).eventType, 'CONNECTED');
+    good.ws.close();
+  } finally {
+    await stopBridge(child);
+  }
+});
