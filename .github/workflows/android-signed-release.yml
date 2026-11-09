@@ -59,7 +59,10 @@ jobs:
             -signedjar "$SIGNED_FILE" \
             app/build/outputs/bundle/release/app-release.aab \
             "$KEY_ALIAS"
-          jarsigner -verify -strict -verbose -certs "$SIGNED_FILE" > "$RUNNER_TEMP/signing-verification.txt"
+          # Google Play upload keys commonly use self-signed certificates.
+          # -strict rejects those despite a valid cryptographic signature.
+          jarsigner -verify -verbose -certs "$SIGNED_FILE" > "$RUNNER_TEMP/signing-verification.txt"
+          grep -Fq "jar verified." "$RUNNER_TEMP/signing-verification.txt"
           test -s "$SIGNED_FILE"
           mkdir -p app/build/outputs/signed
           install -m 0600 "$SIGNED_FILE" app/build/outputs/signed/opencode-remote-signed.aab
