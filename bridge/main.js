@@ -806,6 +806,13 @@ wss.on('connection', (ws, req) => {
     }
     const eventType = frame.eventType;
     const payload = frame.payload;
+    // Do this before any implicit string conversion or dispatch: JSON objects
+    // with non-callable toString/valueOf can otherwise throw out of the WS
+    // event callback and terminate the bridge process.
+    if (typeof eventType !== 'string' || !/^[A-Z_]{1,64}$/.test(eventType)) {
+      ws.close(1003, 'invalid event type');
+      return;
+    }
     console.log(`  < ${eventType}`);
 
     if (eventType === 'CONNECT') {
@@ -838,7 +845,14 @@ wss.on('connection', (ws, req) => {
       // per-device token, and tell the client to switch to it.
       if (typeof suppliedToken === 'string' && Date.now() < pairingDeadline
           && pairingsRemaining > 0 && timingSafeTokenEquals(suppliedToken, AUTH_TOKEN)) {
-        const { token, deviceId } = issueDeviceToken(deviceName);
+        let credential;
+        try {
+          credential = issueDeviceToken(deviceName);
+        } catch (error) {
+          ws.close(1011, 'cannot persist pairing credentials');
+          return;
+        }
+        const { token, deviceId } = credential;
         pairingsRemaining -= 1;
         ws.authenticated = true;
         clearTimeout(authTimer);
