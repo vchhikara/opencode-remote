@@ -366,6 +366,24 @@ class SessionManagerTest {
     }
 
     @Test
+    fun testGlobalSessionSearchOnlyAcceptsNewestRequestId() = testScope.runTest {
+        manager.fetchAllSessions()
+        // Test the protocol rule with synthetic IDs: a mismatched response must
+        // not dismiss the pending request or replace its results.
+        simulateIncomingMessage(createFrame("ALL_SESSIONS_LIST",
+            AllSessionsListDto(emptyList(), requestId = "obsolete-request"), json))
+        assertEquals(true, manager.allSessionsLoading.value)
+        simulateIncomingMessage(createFrame("ERROR",
+            ErrorPayload("old error", operation = "FETCH_ALL_SESSIONS", requestId = "obsolete-request"), json))
+        assertEquals(true, manager.allSessionsLoading.value)
+        assertEquals(null, manager.allSessionsError.value)
+        // Legacy bridges without request IDs still interoperate.
+        simulateIncomingMessage(createFrame("ALL_SESSIONS_LIST",
+            AllSessionsListDto(emptyList()), json))
+        assertEquals(false, manager.allSessionsLoading.value)
+    }
+
+    @Test
     fun testAllSessionsListWithoutNextCursorMeansNoMorePages() = testScope.runTest {
         val sessions = listOf(GlobalSessionDto("s1", "Only", "/proj-a", 100L, reachable = true))
         simulateIncomingMessage(createFrame("ALL_SESSIONS_LIST", AllSessionsListDto(sessions, nextCursor = null), json))
