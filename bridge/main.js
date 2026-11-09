@@ -1160,7 +1160,11 @@ wss.on('connection', (ws, req) => {
       case 'TERMINAL': {
         const command = String(payload);
         pushTerminalLine(`> ${command}`);
-        appendAuditLog('terminal_command', { command }, ws);
+        appendAuditLog('terminal_command', {
+          // Raw command text may include passwords, access tokens or private data.
+          sha256: crypto.createHash('sha256').update(command).digest('hex'),
+          length: command.length
+        }, ws);
         runTerminalCommand(command).catch(err => pushTerminalLine(`Error: ${err.message}`));
         break;
       }
@@ -1282,7 +1286,7 @@ wss.on('connection', (ws, req) => {
           break;
         }
         pushTerminalLine(`$ git ${gitCmd}`);
-        appendAuditLog('git_command', { command: gitCmd }, ws);
+        appendAuditLog('git_command', { command: args[0], argumentCount: args.length - 1 }, ws);
         const child = spawn('git', args, { cwd: activeWorkspace });
         let out = '';
         child.stdout.on('data', d => { out += d.toString(); });
