@@ -138,6 +138,10 @@ let sessions = {};
 let activeWorkspace = process.cwd();
 let pendingDiffs = {};
 let tasks = {};
+// Pending interactive requests observed on the active OpenCode SSE feed.
+// Replayed to reconnecting clients; these maps are not a durable event log.
+const pendingPermissions = new Map();
+const pendingQuestions = new Map();
 const WORKSPACE_ROOT = process.env.WORKSPACE_ROOT || process.cwd();
 
 // --- Audit log (Task 8.4.1) ---
@@ -377,6 +381,18 @@ function pushTaskRemoved(id) {
   broadcast('TASK_REMOVED', id);
 }
 
+function runtimeSnapshot() {
+  return {
+    workspace: activeWorkspace,
+    sessionId: ocSessionId,
+    tasks: Object.values(tasks).map(t => ({ id: t.id, name: t.name, port: t.port || null, status: t.status })),
+    diffs: Object.entries(pendingDiffs).map(([fileName, diffText]) => ({ fileName, diffText })),
+    permissions: Array.from(pendingPermissions.values()),
+    questions: Array.from(pendingQuestions.values()),
+    terminalPtyId: activePtyId
+  };
+}
+
 // --- OpenCode server lifecycle ---
 
 // Starts (or restarts) the persistent `opencode serve` process bound to
@@ -390,6 +406,9 @@ function startOpenCodeServer() {
   // always starting null — ensureSession() will fall back to creating a new
   // one if this id no longer exists server-side.
   ocSessionId = loadPersistedSessionId();
+  // SSE requests are scoped to a particular OpenCode server/workspace instance.
+  pendingPermissions.clear();
+  pendingQuestions.clear();
 
   const proc = spawn(OPCODE, ['serve', '--port', String(OC_SERVE_PORT), '--hostname', '127.0.0.1'], {
     cwd: activeWorkspace,
@@ -496,23 +515,27 @@ function relaySseEvent(evt, emit) {
   // confirmed which key the live event actually uses for these two types.
   if (evt.type === 'permission.asked' || evt.type === 'permission.v2.asked') {
     const d = evt.properties || evt.data || {};
-    emit('PERMISSION_REQUEST', {
+    const request = {
       permissionId: d.id,
       sessionId: d.sessionID,
       tool: d.permission || (d.tool && d.tool.callID) || null,
       input: d
-    });
+    };
+    if (typeof d.id === 'string') pendingPermissions.set(d.id, request);
+    emit('PERMISSION_REQUEST', request);
     notifyExternal('permission_request', { permissionId: d.id, sessionId: d.sessionID });
     return;
   }
   if (evt.type === 'question.asked' || evt.type === 'question.v2.asked') {
     const d = evt.properties || evt.data || {};
-    emit('QUESTION_REQUEST', {
+    const request = {
       questionId: d.id,
       sessionId: d.sessionID,
       text: d.text || d.question || null,
       options: d.options || null
-    });
+    };
+    if (typeof d.id === 'string') pendingQuestions.set(d.id, request);
+    emit('QUESTION_REQUEST', request);
     return;
   }
   // Other event types (session.updated, session.idle, plugin.added, etc.) are
@@ -789,6 +812,12 @@ wss.on('connection', (ws, req) => {
     }
 
     switch (eventType) {
+      case 'FETCH_RUNTIME_STATE': {
+        // A reconnect explicitly requests a full current-state replacement.
+        // Deliberately not sent during legacy CONNECT handshakes.
+        ws.send(JSON.stringify({ eventType: 'RUNTIME_STATE', payload: runtimeSnapshot() }));
+        break;
+      }
       case 'FETCH_WORKSPACES': {
         ws.send(JSON.stringify({ eventType: 'WORKSPACE_LIST', payload: workspaces }));
         break;
@@ -1025,7 +1054,8 @@ wss.on('connection', (ws, req) => {
         ocFetch(`/permission/${permissionId}/reply`, {
           method: 'POST',
           body: JSON.stringify({ decision })
-        }).catch(e => console.log(`  ! PERMISSION_REPLY failed: ${e.message}`));
+        }).then(res => { if (res.ok) pendingPermissions.delete(permissionId); })
+          .catch(e => console.log(`  ! PERMISSION_REPLY failed: ${e.message}`));
         break;
       }
       case 'QUESTION_REPLY': {
@@ -1036,7 +1066,8 @@ wss.on('connection', (ws, req) => {
         ocFetch(`/question/${questionId}/reply`, {
           method: 'POST',
           body: JSON.stringify({ answer })
-        }).catch(e => console.log(`  ! QUESTION_REPLY failed: ${e.message}`));
+        }).then(res => { if (res.ok) pendingQuestions.delete(questionId); })
+          .catch(e => console.log(`  ! QUESTION_REPLY failed: ${e.message}`));
         break;
       }
       case 'QUESTION_REJECT': {
@@ -1044,6 +1075,7 @@ wss.on('connection', (ws, req) => {
         const { questionId } = payload || {};
         if (!questionId) break;
         ocFetch(`/question/${questionId}/reject`, { method: 'POST' })
+          .then(res => { if (res.ok) pendingQuestions.delete(questionId); })
           .catch(e => console.log(`  ! QUESTION_REJECT failed: ${e.message}`));
         break;
       }
