@@ -50,6 +50,11 @@ class RemoteSessionManager(
     private var scheme: String = "ws"
     private fun requireScheme(value: String): String = value.also { require(it == "ws" || it == "wss") }
 
+    /** Ignore events belonging to another selected OpenCode session when tagged. */
+    private fun acceptsSession(eventSessionId: String?): Boolean =
+        eventSessionId == null || _activeSessionId.value == null ||
+            _activeSessionId.value == eventSessionId
+
     private val ws = WsClient(scope)
     val connectionState: StateFlow<ConnectionState> = ws.connectionState
 
@@ -195,9 +200,9 @@ class RemoteSessionManager(
     val terminalLines: StateFlow<List<TerminalLine>> = terminal.lines
     val terminalHistory: StateFlow<List<String>> = terminal.history
 
-    // The bridge's FILE_CONTENT reply carries no path, only the raw text — remember
-    // what we last asked for so the UI-facing FileContentDto can be paired up.
+    // Legacy server fallback. New replies carry path and requestId.
     private var pendingFileRequestPath: String? = null
+    private var latestFileRequestId: String? = null
 
     // Settings-gated raw frame trace, set by the caller (MainActivity, from
     // SettingsRepository) rather than read from DataStore in here — this class has
@@ -273,10 +278,12 @@ class RemoteSessionManager(
                     _streamingMessage.value = null // final message landed; turn is over
                 }
                 "STREAM_TEXT_DELTA" -> frame.decodePayload<StreamTextDeltaDto>(json)?.let { delta ->
+                    if (!acceptsSession(delta.sessionId)) return@let
                     _streamingMessage.update { (it ?: StreamingMessageDto()).copy(text = it?.text.orEmpty() + delta.text) }
                     runLog.streamActivity()
                 }
                 "STREAM_TOOL_CALL" -> frame.decodePayload<StreamToolCallDto>(json)?.let { call ->
+                    if (!acceptsSession(call.sessionId)) return@let
                     val target = extractToolTarget(call.input)
                     _streamingMessage.update { current ->
                         val base = current ?: StreamingMessageDto()
@@ -288,6 +295,7 @@ class RemoteSessionManager(
                     runLog.toolCall(call.tool, target)
                 }
                 "STREAM_TOOL_RESULT" -> frame.decodePayload<StreamToolResultDto>(json)?.let { result ->
+                    if (!acceptsSession(result.sessionId)) return@let
                     val failed = isErrorToolOutput(result.output)
                     _streamingMessage.update { current ->
                         val base = current ?: StreamingMessageDto()
@@ -319,10 +327,12 @@ class RemoteSessionManager(
                     _activeSessionId.value = it.id
                 }
                 "PERMISSION_REQUEST" -> frame.decodePayload<PermissionRequestDto>(json)?.let {
+                    if (!acceptsSession(it.sessionId)) return@let
                     _pendingPermission.value = it
                     runLog.permissionRequested(it.tool)
                 }
                 "QUESTION_REQUEST" -> frame.decodePayload<QuestionRequestDto>(json)?.let {
+                    if (!acceptsSession(it.sessionId)) return@let
                     _pendingQuestion.value = it
                     runLog.questionAsked(it.text)
                 }
@@ -335,8 +345,17 @@ class RemoteSessionManager(
                 // a list — the explorer renders the workspace's children flat, without a
                 // wrapping root row (see flattenTree in FileTreeRows.kt).
                 "FILE_TREE" -> frame.decodePayload<FileNodeDto>(json)?.let { _fileTree.value = it.children ?: emptyList() }
-                "FILE_CONTENT" -> frame.decodePayload<String>(json)?.let { content ->
-                    _fileContent.value = FileContentDto(path = pendingFileRequestPath ?: "", content = content)
+                "FILE_CONTENT" -> {
+                    val correlated = frame.decodePayload<BridgeFileContentDto>(json)
+                    if (correlated != null) {
+                        if (correlated.requestId == latestFileRequestId) {
+                            _fileContent.value = FileContentDto(correlated.path, correlated.content)
+                        }
+                    } else {
+                        frame.decodePayload<String>(json)?.let { content ->
+                            _fileContent.value = FileContentDto(pendingFileRequestPath ?: "", content)
+                        }
+                    }
                 }
                 "FILE_DIFF" -> frame.decodePayload<BridgeFileDiffDto>(json)?.let { diff ->
                     val entry = FileDiffDto(filePath = diff.fileName, patch = diff.diffText)
@@ -360,7 +379,8 @@ class RemoteSessionManager(
                 "AUDIT_LOG" -> frame.decodePayload<List<AuditLogEntryDto>>(json)?.let { _auditLog.value = it }
                 "NOTIFY" -> frame.decodePayload<NotifyPayload>(json)?.let { _notifyEvents.emit(it) }
                 "ERROR" -> {
-                    val msg = frame.decodePayload<ErrorPayload>(json)?.message ?: "Unknown error"
+                    val failure = frame.decodePayload<ErrorPayload>(json)
+                    val msg = failure?.message ?: "Unknown error"
                     _lastError.value = BridgeError(++errorSeq, msg, clock())
                     Log.e("RemoteSessionManager", "Server sent error: $msg")
                     // FETCH_ALL_SESSIONS/OPEN_SESSION_GLOBAL failures arrive as a
@@ -369,11 +389,14 @@ class RemoteSessionManager(
                     // attributed to it — surfaced via allSessionsError instead of
                     // only the generic lastError, since the dedicated screen needs
                     // an inline message, not a toast-style one-shot.
-                    if (_allSessionsLoading.value) {
+                    if (_allSessionsLoading.value && (failure?.operation == "FETCH_ALL_SESSIONS"
+                                || (failure?.operation == null && msg.startsWith("FETCH_ALL_SESSIONS failed:")))) {
                         _allSessionsLoading.value = false
                         _allSessionsError.value = msg
                     }
-                    if (_openGlobalSessionLoading.value) {
+                    if (_openGlobalSessionLoading.value && (failure?.operation == "OPEN_SESSION_GLOBAL"
+                                || (failure?.operation == null && (msg.startsWith("OPEN_SESSION_GLOBAL")
+                                    || msg.startsWith("Workspace not found:"))))) {
                         _openGlobalSessionLoading.value = false
                         _openGlobalSessionError.value = msg
                     }
@@ -418,9 +441,13 @@ class RemoteSessionManager(
 
     fun fetchFileTree() = sendRaw("FETCH_FILE_TREE")
 
-    fun fetchFile(path: String) {
+    fun fetchFile(path: String): String {
+        val id = java.util.UUID.randomUUID().toString()
+        latestFileRequestId = id
         pendingFileRequestPath = path
-        sendString("FETCH_FILE", path)
+        _fileContent.value = null
+        sendRaw("FETCH_FILE", json.encodeToJsonElement(FetchFileRequestDto(path, id)))
+        return id
     }
 
     fun acceptDiff(filePath: String) {

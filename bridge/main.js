@@ -805,17 +805,34 @@ wss.on('connection', (ws, req) => {
         break;
       }
       case 'FETCH_FILE': {
-        const fp = String(payload);
+        // Legacy clients send a bare path; correlated requests include an id.
+        const structured = payload !== null && typeof payload === 'object' && !Array.isArray(payload);
+        const fp = structured ? payload.path : payload;
+        const requestId = structured ? payload.requestId : null;
+        const validRequest = !structured || (typeof requestId === 'string'
+          && requestId.length >= 1 && requestId.length <= 128);
+        const sendFileError = (message) => {
+          ws.send(JSON.stringify({
+            eventType: 'ERROR',
+            payload: { message, operation: 'FETCH_FILE',
+              ...(validRequest && structured ? { requestId } : {}) }
+          }));
+        };
+        if (!validRequest || typeof fp !== 'string') {
+          sendFileError('Invalid file request');
+          break;
+        }
         try {
           const fullPath = resolveInsideWorkspace(fp);
-          if (fs.existsSync(fullPath) && fs.statSync(fullPath).isFile()) {
+          if (fs.statSync(fullPath).isFile()) {
             const content = fs.readFileSync(fullPath, 'utf-8');
-            ws.send(JSON.stringify({ eventType: 'FILE_CONTENT', payload: content }));
+            const response = structured ? { requestId, path: fp, content } : content;
+            ws.send(JSON.stringify({ eventType: 'FILE_CONTENT', payload: response }));
           } else {
-            ws.send(JSON.stringify({ eventType: 'ERROR', payload: { message: `File not found: ${fp}` } }));
+            sendFileError(`File not found: ${fp}`);
           }
         } catch (e) {
-          ws.send(JSON.stringify({ eventType: 'ERROR', payload: { message: e.message } }));
+          sendFileError(e.message);
         }
         break;
       }
@@ -878,7 +895,7 @@ wss.on('connection', (ws, req) => {
           const result = listAllSessions({ limit: opts.limit, cursor: opts.cursor });
           ws.send(JSON.stringify({ eventType: 'ALL_SESSIONS_LIST', payload: result }));
         } catch (e) {
-          ws.send(JSON.stringify({ eventType: 'ERROR', payload: { message: `FETCH_ALL_SESSIONS failed: ${e.message}` } }));
+          ws.send(JSON.stringify({ eventType: 'ERROR', payload: { message: `FETCH_ALL_SESSIONS failed: ${e.message}`, operation: 'FETCH_ALL_SESSIONS' } }));
         }
         break;
       }
@@ -894,12 +911,12 @@ wss.on('connection', (ws, req) => {
         (async () => {
           try {
             if (!id || !worktree) {
-              ws.send(JSON.stringify({ eventType: 'ERROR', payload: { message: 'OPEN_SESSION_GLOBAL requires both id and worktree' } }));
+              ws.send(JSON.stringify({ eventType: 'ERROR', payload: { message: 'OPEN_SESSION_GLOBAL requires both id and worktree', operation: 'OPEN_SESSION_GLOBAL' } }));
               return;
             }
             const { resolved, error } = resolveWithinWorkspaceRoot(worktree);
             if (error) {
-              ws.send(JSON.stringify({ eventType: 'ERROR', payload: { message: error } }));
+              ws.send(JSON.stringify({ eventType: 'ERROR', payload: { message: error, operation: 'OPEN_SESSION_GLOBAL' } }));
               return;
             }
             activeWorkspace = resolved;
@@ -919,7 +936,7 @@ wss.on('connection', (ws, req) => {
             ws.send(JSON.stringify({ eventType: 'SESSION_OPENED', payload: { id, worktree: resolved } }));
             broadcast('WORKSPACE_LIST', workspaces);
           } catch (e) {
-            ws.send(JSON.stringify({ eventType: 'ERROR', payload: { message: `OPEN_SESSION_GLOBAL failed: ${e.message}` } }));
+            ws.send(JSON.stringify({ eventType: 'ERROR', payload: { message: `OPEN_SESSION_GLOBAL failed: ${e.message}`, operation: 'OPEN_SESSION_GLOBAL' } }));
           }
         })();
         break;

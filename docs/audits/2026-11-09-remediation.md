@@ -14,14 +14,14 @@
 
 | Command / check | Recorded outcome |
 |---|---|
-| `npm ci --ignore-scripts --no-audit --no-fund`, `npm test` under Node 24.20.0 | **PASS: 54 tests, 0 failures**, log `/tmp/opencode-remediation-bridge-verified.log` |
-| `./gradlew :app:testDebugUnitTest :app:assembleDebug --console=plain --no-daemon` | **PASS**, local JDK 17 and `ANDROID_HOME=$HOME/Android/Sdk`; log `/tmp/opencode-remediation-gradle-v4.log` |
-| Android XML test result files | **98 tests, 0 failures, 0 errors, 0 skipped** in 11 test suites |
+| `npm ci --ignore-scripts --no-audit --no-fund`, `npm test` under Node 24.20.0 | **PASS: 55 tests, 0 failures**, log `/tmp/opencode-remediation-bridge-correlation.log` |
+| `./gradlew :app:testDebugUnitTest :app:assembleDebug --console=plain --no-daemon` | **PASS**, local JDK 17 and `ANDROID_HOME=$HOME/Android/Sdk`; log `/tmp/opencode-remediation-gradle-session-filter.log` |
+| Android XML test result files | **101 tests, 0 failures, 0 errors, 0 skipped** in 11 test suites |
 | `./gradlew :app:bundleRelease :app:processReleaseMainManifest --console=plain --no-daemon` | **PASS**, log `/tmp/opencode-remediation-release.log` |
 | `jarsigner -verify -verbose app-release.aab` | **jar is unsigned**; no silent debug-key signing |
 | `node --check bridge/main.js`, `git diff --check` | **PASS** |
 | ADB device and emulator QA | **UNAVAILABLE**: `adb devices -l` returned no connected devices |
-| Hosted GitHub Actions run for remediation branch | **NOT RUN** at the time of this local report |
+| Hosted GitHub Actions (run 42654877531, commit `db27c0b`) | **PASS: 4/4 jobs** (bridge, Android debug tests/build, Android release/compliance, OWASP scan). Additional correlation commit needs its own CI verification |
 | TLS proxy / cellular handoff / multiple physical devices | **NOT RUN** |
 
 Built outputs remain on HPpavilionpro under `android-application/app/build/outputs/apk/debug/app-debug.apk` and `android-application/app/build/outputs/bundle/release/app-release.aab`. The release AAB is **unsigned** and is not a distributable production build.
@@ -38,14 +38,14 @@ Built outputs remain on HPpavilionpro under `android-application/app/build/outpu
 | SEC-04 symlink-based path escape | **FIXED + VERIFIED** | Canonical root/file/workspace resolution in `bridge/main.js`; synthetic symlink and traversal regression tests pass. As documented, no containment claim against a legitimate authenticated shell operator or adversarial local symlink race |
 | SEC-05 WS/WSS transport | **PARTIALLY FIXED** | Explicit scheme parsed and stored, Ktor WSS URL choice, OkHttp-engine heartbeat configured; Android builds and QR JVM tests pass. Trustworthy WSS endpoint, actual certificate and off-LAN tests not run; global cleartext exception remains |
 | QA-01 false Revert action | **FIXED + VERIFIED** | Android action now says 'Dismiss review'; run log states bytes are not reverted; regression test confirms dismissal leaves files untouched. A genuine conflict-aware undo remains out of scope |
-| CI-01 Node runtime mismatch | **PARTIALLY FIXED** | CI Node 24 and package engines/lockfile updated; local 54/54 bridge tests pass. Hosted Actions run on branch pending |
-| CI-02 Android CI directory | **FIXED + VERIFIED** | Workflow `working-directory: android-application`; local Gradle reached, compiled and tested successfully. Hosted CI validation pending |
+| CI-01 Node runtime mismatch | **FIXED + VERIFIED** | CI Node 24 and package engines/lockfile updated; local 55/55 bridge tests pass. GitHub Actions run 42654877531 bridge job succeeded before the subsequent correlation patch |
+| CI-02 Android CI directory | **FIXED + VERIFIED** | Workflow `working-directory: android-application`; local Gradle reached, compiled and tested successfully. Hosted CI run 42654877531 passed |
 | CI-03 machine-specific JDK path | **FIXED + VERIFIED** | Removed tracked `org.gradle.java.home`; local Gradle ran using JDK 17 |
 | REL-01 release debug signing | **FIXED + VERIFIED** | Removed explicit debug signing override from release. Generated release AAB is unsigned according to `jarsigner`; proper controlled upload-key signing still required before release |
 | NET-01 WebSocket safeguards | **PARTIALLY FIXED** | Restrict `/ws`, 16 MiB inbound message limit, 64 connections, 10-second unauthenticated timeout, ping/pong cleanup, bounded broadcast-buffer handling and malformed-frame tests. Per-IP rate control, comprehensive saturation/backpressure tests and streaming for large direct replies remain |
-| STATE-01 global mutable workspace/session | **NOT FIXED** | Shared process workspace, prompt, PTY and stream routing remain; needs concurrency isolation and deterministic cross-device tests |
+| STATE-01 global mutable workspace/session | **PARTIALLY FIXED** | Android ignores foreign session-tagged stream/tool/permission/question events when the selected session is known, regression-tested. Shared bridge workspace, prompt, PTY and session state remains; needs ownership and deterministic cross-device tests |
 | STATE-02 reconnect recovery | **PARTIALLY FIXED** | Corrected OkHttp ping setting. No authoritative replay of missed permissions/questions/tasks; Android reconnect/device verification unavailable |
-| STATE-03 response correlation | **NOT FIXED** | File content is still associated with the last-requested path and generic errors can misattribute in-flight operations; requires request IDs and compatible DTO changes |
+| STATE-03 response correlation | **PARTIALLY FIXED** | Correlated FETCH_FILE requestId/path/content and operation-tagged file/global-session errors with backward-compatible legacy frames. Android ignores stale file results and unrelated errors; regression-tested. Other operations still need comprehensive IDs and out-of-order tests |
 | UX-01 background alerts | **NOT FIXED** | `NOTIFY` still operates over a live WebSocket; disconnected or killed-app delivery not guaranteed |
 | UX-02 pairing QR metadata | **FIXED + VERIFIED** | QR now includes actual port and scheme; Kotlin parser supports nondefault port and legacy payloads, with JVM tests. Physical QR scanning untested |
 | PERF-01 synchronous startup settings | **NOT FIXED** | `MainActivity` still uses `runBlocking`; no startup profile available to validate a safe asynchronous replacement |
@@ -54,8 +54,8 @@ Built outputs remain on HPpavilionpro under `android-application/app/build/outpu
 
 ## Residual priorities and exact continuation
 
-1. Confirm hosted CI on the remediation branch. Investigate any hosted-only dependency or toolchain failure from logs, not inference.
-2. Fix STATE-01/STATE-03 together: explicit operation IDs, per-session stream ownership, workspace transition locking, request/response and error correlation. Add synthetic overlapping-request tests before changing Android DTO contracts.
+1. Confirm hosted CI for every subsequent remediation commit (initial run 42654877531 passed all four jobs). Investigate hosted-only failures from logs, not inference.
+2. Complete STATE-01/STATE-03: extend tested file request/error correlation to remaining operations, add per-session ownership and serialize workspace transitions. Build deterministic overlapping-client tests.
 3. Implement STATE-02 authoritative state refresh after reconnect, including pending permissions, questions, tasks and terminal state. Test disconnections against a disposable bridge.
 4. Add per-IP auth rate limiting, connection-pressure integration tests, graceful handling of credential-store errors and bounded large-response pagination.
 5. Validate WSS behind a controlled TLS proxy, certificate trust and reconnect on authorized Android hardware. Check Android API 24/33/36 and QR scan/lifecycle.

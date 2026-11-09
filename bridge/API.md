@@ -46,10 +46,15 @@ Same path-confinement rule as `OPEN_WORKSPACE`. Replies with `ERROR` on failure;
 No payload. Replies `FILE_TREE` with the active workspace's file tree, or `ERROR`.
 
 ### `FETCH_FILE`
+Legacy payloads are bare relative or absolute paths and receive bare-string `FILE_CONTENT` responses:
 ```json
-{ "eventType": "FETCH_FILE", "payload": "relative/or/absolute/path" }
+{ "eventType": "FETCH_FILE", "payload": "src/main.kt" }
 ```
-Path is resolved and confined inside the active workspace (`resolveInsideWorkspace`). Replies `FILE_CONTENT` (bare string) or `ERROR`.
+New clients supply request identities:
+```json
+{ "eventType": "FETCH_FILE", "payload": { "path": "src/main.kt", "requestId": "client-generated-id" } }
+```
+New replies use `{ "path", "requestId", "content" }`. Errors use `{ "message", "operation": "FETCH_FILE", "requestId" }`. The client ignores stale responses. All paths are canonicalized and escaping symlinks rejected. The legacy response format remains supported.
 
 ### `PROMPT`
 Sends a prompt to the persistent `opencode serve` session.

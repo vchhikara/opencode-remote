@@ -159,3 +159,35 @@ test('malformed non-object frames are rejected before authorization', async () =
     valid.ws.close();
   } finally { await stopBridge(child); }
 });
+
+test('correlated FETCH_FILE preserves file request IDs and legacy wire compatibility', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'bridge-file-correlation-'));
+  fs.writeFileSync(path.join(root, 'a.txt'), 'A');
+  fs.writeFileSync(path.join(root, 'b.txt'), 'B');
+  const port = await freePort();
+  const child = startBridge(port, 'pairing-secret', root);
+  try {
+    await waitForPort(port);
+    const { ws } = await handshake(port, 'pairing-secret');
+    await nextMessage(ws);
+    await nextMessage(ws);
+    ws.send(JSON.stringify({eventType:'FETCH_FILE', payload:{path:'a.txt', requestId:'request-A'}}));
+    ws.send(JSON.stringify({eventType:'FETCH_FILE', payload:{path:'b.txt', requestId:'request-B'}}));
+    const first = await nextMessage(ws);
+    const second = await nextMessage(ws);
+    assert.equal(first.eventType, 'FILE_CONTENT');
+    assert.deepEqual(first.payload, {requestId:'request-A',path:'a.txt',content:'A'});
+    assert.equal(second.eventType, 'FILE_CONTENT');
+    assert.deepEqual(second.payload, {requestId:'request-B',path:'b.txt',content:'B'});
+    ws.send(JSON.stringify({eventType:'FETCH_FILE', payload:{path:'missing.txt',requestId:'request-missing'}}));
+    const error = await nextMessage(ws);
+    assert.equal(error.eventType,'ERROR');
+    assert.equal(error.payload.requestId,'request-missing');
+    assert.equal(error.payload.operation,'FETCH_FILE');
+    ws.send(JSON.stringify({eventType:'FETCH_FILE',payload:'a.txt'}));
+    const legacy = await nextMessage(ws);
+    assert.equal(legacy.eventType,'FILE_CONTENT');
+    assert.equal(legacy.payload,'A');
+    ws.close();
+  } finally { await stopBridge(child); }
+});
