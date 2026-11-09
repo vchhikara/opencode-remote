@@ -19,23 +19,15 @@ android {
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
   }
 
-  signingConfigs {
-    create("debugConfig") {
-      storeFile = file("${rootDir}/debug.keystore")
-      storePassword = "android"
-      keyAlias = "androiddebugkey"
-      keyPassword = "android"
-    }
-  }
-
   buildTypes {
     release {
       isMinifyEnabled = false
       proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
-      signingConfig = signingConfigs.getByName("debugConfig")
+      // Intentionally unsigned until dedicated release credentials are supplied.
+      // Never sign a distributable artifact with the development debug key.
     }
     debug {
-      signingConfig = signingConfigs.getByName("debugConfig")
+      // Android Gradle Plugin supplies the standard per-user debug keystore.
     }
   }
 
