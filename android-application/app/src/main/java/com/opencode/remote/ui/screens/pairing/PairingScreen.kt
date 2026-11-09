@@ -209,61 +209,76 @@ fun QRScannerScreen(onQrCodeScanned: (String) -> Unit, onClose: () -> Unit) {
     }
 
     if (hasCameraPermission) {
-        Box(modifier = Modifier.fillMaxSize()) {
-            AndroidView(
-                factory = { ctx ->
-                    val previewView = PreviewView(ctx)
-                    val cameraProviderFuture = ProcessCameraProvider.getInstance(ctx)
+        // Each scanner entry owns exactly one camera binding, analyzer, executor
+        // and ML Kit client. All are disposed when the scanner leaves composition.
+        val previewView = remember(context) { PreviewView(context) }
+        val cameraProviderFuture = remember(context) { ProcessCameraProvider.getInstance(context) }
+        val scanner = remember { BarcodeScanning.getClient() }
+        val executor = remember { Executors.newSingleThreadExecutor() }
+        val scanning = remember { java.util.concurrent.atomic.AtomicBoolean(true) }
+        val latestResult by rememberUpdatedState(onQrCodeScanned)
 
-                    cameraProviderFuture.addListener({
-                        val cameraProvider = cameraProviderFuture.get()
-                        val preview = Preview.Builder().build().also {
-                            it.setSurfaceProvider(previewView.surfaceProvider)
-                        }
+        DisposableEffect(previewView, lifecycleOwner) {
+            val preview = Preview.Builder().build().also {
+                it.setSurfaceProvider(previewView.surfaceProvider)
+            }
+            val imageAnalysis = ImageAnalysis.Builder()
+                .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+                .build()
 
-                        val imageAnalysis = ImageAnalysis.Builder()
-                            .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
-                            .build()
-
-                        val scanner = BarcodeScanning.getClient()
-                        val executor = Executors.newSingleThreadExecutor()
-
-                        imageAnalysis.setAnalyzer(executor) { imageProxy ->
-                            @androidx.annotation.OptIn(androidx.camera.core.ExperimentalGetImage::class)
-                            val mediaImage = imageProxy.image
-                            if (mediaImage != null) {
-                                val image = InputImage.fromMediaImage(mediaImage, imageProxy.imageInfo.rotationDegrees)
-                                scanner.process(image)
-                                    .addOnSuccessListener { barcodes ->
-                                        barcodes.firstOrNull()?.rawValue?.let { value ->
-                                            onQrCodeScanned(value)
-                                        }
-                                    }
-                                    .addOnCompleteListener {
-                                        imageProxy.close()
-                                    }
-                            } else {
-                                imageProxy.close()
+            imageAnalysis.setAnalyzer(executor) { imageProxy ->
+                if (!scanning.get()) {
+                    imageProxy.close()
+                } else {
+                    @androidx.annotation.OptIn(androidx.camera.core.ExperimentalGetImage::class)
+                    val mediaImage = imageProxy.image
+                    if (mediaImage == null) {
+                        imageProxy.close()
+                    } else {
+                        val image = InputImage.fromMediaImage(mediaImage, imageProxy.imageInfo.rotationDegrees)
+                        scanner.process(image)
+                            .addOnSuccessListener { barcodes ->
+                                val value = barcodes.firstOrNull()?.rawValue
+                                if (value != null && scanning.compareAndSet(true, false)) {
+                                    latestResult(value)
+                                }
                             }
-                        }
+                            .addOnCompleteListener { imageProxy.close() }
+                    }
+                }
+            }
 
-                        try {
-                            cameraProvider.unbindAll()
-                            cameraProvider.bindToLifecycle(
-                                lifecycleOwner,
-                                CameraSelector.DEFAULT_BACK_CAMERA,
-                                preview,
-                                imageAnalysis
-                            )
-                        } catch (e: Exception) {
-                            e.printStackTrace()
-                        }
-                    }, ContextCompat.getMainExecutor(ctx))
-                    previewView
-                },
-                modifier = Modifier.fillMaxSize()
-            )
-            
+            cameraProviderFuture.addListener({
+                if (scanning.get()) {
+                    try {
+                        cameraProviderFuture.get().bindToLifecycle(
+                            lifecycleOwner, CameraSelector.DEFAULT_BACK_CAMERA,
+                            preview, imageAnalysis
+                        )
+                    } catch (e: Exception) {
+                        android.util.Log.e("QRScannerScreen", "Camera binding failed", e)
+                    }
+                }
+            }, ContextCompat.getMainExecutor(context))
+
+            onDispose {
+                scanning.set(false)
+                imageAnalysis.clearAnalyzer()
+                if (cameraProviderFuture.isDone) {
+                    try {
+                        cameraProviderFuture.get().unbind(preview, imageAnalysis)
+                    } catch (e: Exception) {
+                        android.util.Log.w("QRScannerScreen", "Camera release failed", e)
+                    }
+                }
+                scanner.close()
+                executor.shutdown()
+            }
+        }
+
+        Box(modifier = Modifier.fillMaxSize()) {
+            AndroidView(factory = { previewView }, modifier = Modifier.fillMaxSize())
+
             OcButton(
                 "Close",
                 onClick = onClose,
