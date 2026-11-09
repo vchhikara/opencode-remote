@@ -18,6 +18,8 @@ const AUTH_FAILURE_LIMIT = 10;
 const AUTH_FAILURE_WINDOW_MS = 60_000;
 const MAX_AUTH_FAILURE_ENTRIES = 2048;
 const MAX_FILE_CONTENT_BYTES = 8 * 1024 * 1024;
+const MAX_TREE_NODES = 10000;
+const MAX_TREE_DEPTH = 24;
 const OPCODE = process.env.OPCODE || 'opencode';
 const AUTH_TOKEN = process.env.BRIDGE_TOKEN || crypto.randomBytes(32).toString('hex');
 // Pairing credentials are usable only during startup's short window.
@@ -679,20 +681,26 @@ async function runPrompt(prompt) {
 
 // --- File tree ops ---
 function fileTreeToJson(dir, rootName) {
-  function walk(d, rel) {
+  let nodes = 0;
+  function walk(d, rel, depth = 0) {
+    if (depth > MAX_TREE_DEPTH) throw new Error('File tree depth limit exceeded');
     const entries = fs.readdirSync(d, { withFileTypes: true });
     const children = [];
     for (const e of entries) {
       if (e.name.startsWith('.') || e.name === 'node_modules') continue;
+      if (++nodes > MAX_TREE_NODES) throw new Error('File tree node limit exceeded');
       const full = path.join(d, e.name);
       const rp = rel ? `${rel}/${e.name}` : e.name;
       try {
         if (e.isDirectory()) {
-          children.push({ name: e.name, path: rp, isDirectory: true, children: walk(full, rp) });
+          children.push({ name: e.name, path: rp, isDirectory: true, children: walk(full, rp, depth + 1) });
         } else {
           children.push({ name: e.name, path: rp, isDirectory: false });
         }
-      } catch {}
+      } catch (error) {
+        // Resource limits should not be silently interpreted as missing entries.
+        if (/^File tree (depth|node) limit exceeded$/.test(error.message)) throw error;
+      }
     }
     return children;
   }
