@@ -140,7 +140,7 @@ const MUTATING_ACTIONS = new Set([
   'OPEN_WORKSPACE', 'ADD_WORKSPACE', 'OPEN_SESSION_GLOBAL', 'SWITCH_SESSION',
   'NEW_SESSION', 'FORK_SESSION', 'PROMPT', 'TERMINAL', 'TERMINAL_RESIZE',
   'PERMISSION_REPLY', 'QUESTION_REPLY', 'QUESTION_REJECT', 'GIT', 'KILL_TASK',
-  'ACCEPT_DIFF', 'REJECT_DIFF', 'REVOKE_TOKEN'
+  'ACCEPT_DIFF', 'REJECT_DIFF', 'REVOKE_TOKEN', 'ROTATE_TOKEN'
 ]);
 const CONTEXT_SWITCH_ACTIONS = new Set([
   'OPEN_WORKSPACE', 'OPEN_SESSION_GLOBAL', 'SWITCH_SESSION',
@@ -1105,7 +1105,8 @@ wss.on('connection', (ws, req) => {
         // Confirmed endpoint (PROGRESS.md Phase 0): POST /question/{requestID}/reply
         const { questionId, answer } = payload || {};
         if (!questionId) break;
-        appendAuditLog('question_reply', { questionId, answer }, ws);
+        // Never persist arbitrary answer contents in the audit log.
+        appendAuditLog('question_reply', { questionId, answered: true }, ws);
         ocFetch(`/question/${questionId}/reply`, {
           method: 'POST',
           body: JSON.stringify({ answer })
@@ -1149,6 +1150,40 @@ wss.on('connection', (ws, req) => {
           await ocReadyPromise;
           await ocFetch(`/pty/${targetId}`, { method: 'PUT', body: JSON.stringify({ size: { rows, cols } }) });
         })().catch(e => console.log(`  ! TERMINAL_RESIZE failed: ${e.message}`));
+        break;
+      }
+      case 'ROTATE_TOKEN': {
+        const oldKey = ws.deviceTokenKey;
+        const existing = oldKey && Object.hasOwn(deviceTokens, oldKey) ? deviceTokens[oldKey] : null;
+        if (!existing || existing.deviceId !== ws.deviceId) {
+          ws.send(JSON.stringify({ eventType: 'ERROR', payload: {
+            operation: 'ROTATE_TOKEN', message: 'Current device credential is invalid' } }));
+          break;
+        }
+        try {
+          const newToken = crypto.randomBytes(32).toString('hex');
+          const newKey = deviceTokenKey(newToken);
+          const replacement = Object.assign(Object.create(null), deviceTokens);
+          delete replacement[oldKey];
+          replacement[newKey] = { ...existing, issuedAt: Date.now() };
+          persistDeviceTokens(replacement); // Must succeed before changing memory or announcing token.
+          deviceTokens = replacement;
+          delete sessions[ws.deviceToken];
+          ws.deviceToken = newToken;
+          ws.deviceTokenKey = newKey;
+          for (const other of clients) {
+            if (other !== ws && other.deviceId === ws.deviceId) {
+              other.authenticated = false;
+              other.close(4001, 'device token rotated');
+            }
+          }
+          ws.send(JSON.stringify({ eventType: 'TOKEN_ROTATED', payload: {
+            deviceId: ws.deviceId, issuedToken: newToken } }));
+          appendAuditLog('token_rotated', { deviceId: ws.deviceId }, ws);
+        } catch (error) {
+          ws.send(JSON.stringify({ eventType: 'ERROR', payload: {
+            operation: 'ROTATE_TOKEN', message: 'Could not persist the new device credential' } }));
+        }
         break;
       }
       case 'REVOKE_TOKEN': {
