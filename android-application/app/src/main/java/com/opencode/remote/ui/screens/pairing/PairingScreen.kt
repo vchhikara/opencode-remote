@@ -21,6 +21,8 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -30,6 +32,7 @@ import com.google.mlkit.vision.barcode.common.Barcode
 import com.google.mlkit.vision.common.InputImage
 import com.opencode.remote.data.network.ConnectionState
 import com.opencode.remote.data.network.RemoteSessionManager
+import com.opencode.remote.data.network.TransportPolicy
 import com.opencode.remote.data.pairing.parseQrResult
 import com.opencode.remote.data.storage.TokenStorage
 import com.opencode.remote.ui.components.Eyebrow
@@ -40,6 +43,8 @@ import com.opencode.remote.ui.components.StatusDot
 import com.opencode.remote.ui.theme.Oc
 import com.opencode.remote.ui.theme.OcType
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import java.util.concurrent.Executors
 
 @Composable
@@ -55,11 +60,12 @@ fun PairingScreen(
     var token by remember { mutableStateOf("") }
     var deviceName by remember { mutableStateOf(Build.MODEL) }
     var isScanning by remember { mutableStateOf(false) }
+    var storageError by remember { mutableStateOf<String?>(null) }
 
     val connectionState by sessionManager.connectionState.collectAsState()
 
     LaunchedEffect(Unit) {
-        tokenStorage.getLastCredentials()?.let {
+        withContext(Dispatchers.IO) { tokenStorage.getLastCredentials() }?.let {
             host = it.host
             port = it.port.toString()
             token = it.token
@@ -71,8 +77,18 @@ fun PairingScreen(
     LaunchedEffect(connectionState) {
         if (connectionState is ConnectionState.Connected) {
             val p = port.toIntOrNull() ?: 8080
-            tokenStorage.saveCredentials(host, p, token, deviceName, scheme)
-            onNavigateToWorkspaces()
+            // On pairing the bridge supplies a per-device bearer. Never save
+            // the already-spent one-time QR secret in place of that bearer.
+            val issued = sessionManager.issuedToken.value ?: token
+            val persisted = withContext(Dispatchers.IO) {
+                tokenStorage.saveCredentials(host, p, issued, deviceName, scheme)
+            }
+            if (persisted) {
+                onNavigateToWorkspaces()
+            } else {
+                storageError = "Could not save the device credential."
+                sessionManager.disconnect()
+            }
         }
     }
 
@@ -111,9 +127,18 @@ fun PairingScreen(
             PairingField("Host", host, { host = it }, "192.168.x.x", mono = true)
             PairingField("Port", port, { port = it }, "8080", mono = true, keyboardType = KeyboardType.Number)
             PairingField("Transport (ws or wss)", scheme, { scheme = it.lowercase() }, "ws", mono = true)
-            PairingField("Token", token, { token = it }, "pairing token", mono = true)
+            PairingField("Token", token, { token = it }, "pairing token", mono = true, secret = true)
             PairingField("Device name", deviceName, { deviceName = it }, "This phone")
 
+            storageError?.let {
+                Text(it, style = OcType.body, color = c.negInk)
+            }
+            if (scheme == "ws" && host.isNotBlank() && !TransportPolicy.permitsPlaintext(host)) {
+                Text(
+                    "Public hostnames and addresses require wss://. Plain ws:// is for local networks only.",
+                    style = OcType.body, color = c.negInk
+                )
+            }
             if (connectionState is ConnectionState.Error) {
                 Text(
                     text = (connectionState as ConnectionState.Error).message,
@@ -151,7 +176,7 @@ fun PairingScreen(
                         sessionManager.connect(host, p, token, deviceName, scheme)
                     },
                     kind = OcButtonKind.Gold,
-                    enabled = host.isNotBlank() && token.isNotBlank() && scheme in setOf("ws", "wss") && (port.toIntOrNull() ?: 8080) in 1..65535,
+                    enabled = host.isNotBlank() && token.isNotBlank() && scheme in setOf("ws", "wss") && (scheme == "wss" || TransportPolicy.permitsPlaintext(host)) && (port.toIntOrNull() ?: 8080) in 1..65535,
                     height = 46.dp,
                     textStyle = OcType.buttonLargeStrong,
                     modifier = Modifier.weight(1f)
@@ -168,7 +193,8 @@ private fun PairingField(
     onValueChange: (String) -> Unit,
     placeholder: String,
     mono: Boolean = false,
-    keyboardType: KeyboardType = KeyboardType.Text
+    keyboardType: KeyboardType = KeyboardType.Text,
+    secret: Boolean = false
 ) {
     Eyebrow(label)
     Spacer(modifier = Modifier.height(8.dp))
@@ -181,9 +207,10 @@ private fun PairingField(
         keyboardOptions = KeyboardOptions(
             capitalization = KeyboardCapitalization.None,
             autoCorrectEnabled = false,
-            keyboardType = keyboardType,
+            keyboardType = if (secret) KeyboardType.Password else keyboardType,
             imeAction = ImeAction.Next
-        )
+        ),
+        visualTransformation = if (secret) PasswordVisualTransformation() else VisualTransformation.None
     )
     Spacer(modifier = Modifier.height(16.dp))
 }
