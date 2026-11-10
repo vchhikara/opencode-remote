@@ -61,6 +61,12 @@ class WsClient(private val scope: CoroutineScope) {
     ) {
         require(scheme == "ws" || scheme == "wss") { "Unsupported WebSocket scheme" }
         if (shouldSkipConnect(_connectionState.value)) return
+        if (scheme == "ws" && !TransportPolicy.permitsPlaintext(host)) {
+            _connectionState.value = ConnectionState.Error(
+                "Plain ws:// is restricted to local and private hosts. Use wss:// for public addresses."
+            )
+            return
+        }
         sessionJob?.cancel()
         sessionJob = scope.launch {
             var attempt = 0

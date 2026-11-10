@@ -5,26 +5,31 @@ import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
 
 class TokenStorage(context: Context) {
-    private val masterKey = MasterKey.Builder(context)
-        .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
-        .build()
+    private val appContext = context.applicationContext
 
-    private val sharedPreferences = EncryptedSharedPreferences.create(
-        context,
-        "secure_remote_prefs",
-        masterKey,
-        EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
-        EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
-    )
+    // Keystore initialization requires I/O; defer it off the Activity UI thread.
+    private val sharedPreferences by lazy(LazyThreadSafetyMode.SYNCHRONIZED) {
+        val masterKey = MasterKey.Builder(appContext)
+            .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
+            .build()
+        EncryptedSharedPreferences.create(
+            appContext,
+            "secure_remote_prefs",
+            masterKey,
+            EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
+            EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
+        )
+    }
 
-    fun saveCredentials(host: String, port: Int, token: String, deviceName: String, scheme: String = "ws") {
-        sharedPreferences.edit()
+    /** Commit synchronously on an I/O dispatcher before acknowledging rotation. */
+    fun saveCredentials(host: String, port: Int, token: String, deviceName: String, scheme: String = "ws"): Boolean {
+        return sharedPreferences.edit()
             .putString("host", host)
             .putInt("port", port)
             .putString("token", token)
             .putString("deviceName", deviceName)
             .putString("scheme", scheme)
-            .apply()
+            .commit()
     }
 
     fun getLastCredentials(): Credentials? {

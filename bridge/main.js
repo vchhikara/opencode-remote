@@ -97,13 +97,13 @@ function persistDeviceTokens(tokens) {
     if (fs.existsSync(tmp)) fs.unlinkSync(tmp);
   }
 }
-function saveDeviceTokens() { persistDeviceTokens(deviceTokens); }
-
 function issueDeviceToken(deviceName) {
   const token = crypto.randomBytes(32).toString('hex');
   const deviceId = crypto.randomUUID();
-  deviceTokens[deviceTokenKey(token)] = { deviceId, deviceName, issuedAt: Date.now() };
-  saveDeviceTokens();
+  const replacement = Object.assign(Object.create(null), deviceTokens);
+  replacement[deviceTokenKey(token)] = { deviceId, deviceName, issuedAt: Date.now() };
+  persistDeviceTokens(replacement);
+  deviceTokens = replacement;
   return { token, deviceId };
 }
 
@@ -158,15 +158,22 @@ const MUTATING_ACTIONS = new Set([
   'OPEN_WORKSPACE', 'ADD_WORKSPACE', 'OPEN_SESSION_GLOBAL', 'SWITCH_SESSION',
   'NEW_SESSION', 'FORK_SESSION', 'PROMPT', 'TERMINAL', 'TERMINAL_RESIZE',
   'PERMISSION_REPLY', 'QUESTION_REPLY', 'QUESTION_REJECT', 'GIT', 'KILL_TASK',
-  'ACCEPT_DIFF', 'REJECT_DIFF', 'REVOKE_TOKEN', 'ROTATE_TOKEN'
+  'ACCEPT_DIFF', 'REJECT_DIFF', 'REVOKE_TOKEN', 'ROTATE_TOKEN',
+  'ROTATE_TOKEN_PREPARE', 'ROTATE_TOKEN_ACK'
 ]);
 const CONTEXT_SWITCH_ACTIONS = new Set([
   'OPEN_WORKSPACE', 'OPEN_SESSION_GLOBAL', 'SWITCH_SESSION',
-  'NEW_SESSION', 'FORK_SESSION', 'PROMPT'
+  'NEW_SESSION', 'FORK_SESSION'
 ]);
+// Same-owner prompts are serialized to preserve steering without races.
+const promptQueue = [];
+const MAX_QUEUED_PROMPTS = 8;
+let drainingPrompts = false;
+// Synchronous admission gate around asynchronous workspace/session changes.
+let contextMutationPending = false;
 let controllerDeviceId = null;
 function releaseControllerIfIdle() {
-  if (Object.keys(tasks).length > 0) return;
+  if (drainingPrompts || promptQueue.length || Object.keys(tasks).length) return;
   if (![...clients].some(client => client.authenticated && client.readyState === WebSocket.OPEN
       && client.deviceId === controllerDeviceId)) controllerDeviceId = null;
 }
@@ -411,7 +418,7 @@ async function runTerminalCommand(command) {
   const ptyWs = new WebSocket(`ws://127.0.0.1:${OC_SERVE_PORT}/pty/${ptyId}/connect`);
   ptyWs.on('message', (chunk) => {
     const text = chunk.toString();
-    if (text.startsWith(' ')) return; // out-of-band control frame, not output
+    if (text.startsWith('\0')) return; // out-of-band control frame, not output
     pushTerminalLine(text);
   });
   ptyWs.on('error', (err) => pushTerminalLine(`Error: ${err.message}`));
@@ -638,7 +645,7 @@ async function ensureSession() {
 
 async function runPrompt(prompt) {
   pushAgentState('Thinking...');
-  const taskId = `prompt-${Date.now()}`;
+  const taskId = `prompt-${crypto.randomUUID()}`;
   const task = { id: taskId, name: `Prompt: ${prompt.substring(0, 40)}`, status: 'Running' };
   tasks[taskId] = task;
   pushTaskUpdated(task);
@@ -701,6 +708,21 @@ async function runPrompt(prompt) {
     releaseControllerIfIdle();
     notifyExternal('task_completed', { taskId });
     pushAgentState('Idle');
+  }
+}
+
+// Deliver prompts sequentially against the current workspace and session.
+async function drainPromptQueue() {
+  if (drainingPrompts) return;
+  drainingPrompts = true;
+  try {
+    while (promptQueue.length > 0) {
+      const item = promptQueue.shift();
+      await runPrompt(item.prompt);
+    }
+  } finally {
+    drainingPrompts = false;
+    releaseControllerIfIdle();
   }
 }
 
@@ -826,6 +848,31 @@ wss.on('connection', (ws, req) => {
       const existingDevice = lookupKey && Object.hasOwn(deviceTokens, lookupKey)
         ? deviceTokens[lookupKey] : undefined;
       if (lookupKey && validDeviceRecord(lookupKey, existingDevice)) {
+        // A client can reconnect with its staged bearer after saving it but
+        // before acknowledging rotation. That reconnect commits the rotation.
+        const priorKey = existingDevice.rotationSupersedes;
+        if (typeof priorKey === 'string'
+            && /^sha256:[a-f0-9]{64}$/.test(priorKey)
+            && deviceTokens[priorKey]?.deviceId === existingDevice.deviceId) {
+          try {
+            const replacement = Object.assign(Object.create(null), deviceTokens);
+            delete replacement[priorKey];
+            const confirmed = { ...existingDevice };
+            delete confirmed.rotationSupersedes;
+            replacement[lookupKey] = confirmed;
+            persistDeviceTokens(replacement);
+            deviceTokens = replacement;
+            for (const other of clients) {
+              if (other.deviceTokenKey === priorKey) {
+                other.authenticated = false;
+                other.close(4001, 'rotated');
+              }
+            }
+          } catch (error) {
+            ws.close(1011, 'cannot finalize device credentials');
+            return;
+          }
+        }
         ws.authenticated = true;
         clearTimeout(authTimer);
         authFailures.delete(clientAddr);
@@ -897,9 +944,17 @@ wss.on('connection', (ws, req) => {
           operation: eventType, message: 'Another device currently controls this bridge' } }));
         return;
       }
-      if (CONTEXT_SWITCH_ACTIONS.has(eventType) && Object.keys(tasks).length > 0) {
+      if (CONTEXT_SWITCH_ACTIONS.has(eventType) &&
+          (drainingPrompts || promptQueue.length || Object.keys(tasks).length)) {
         ws.send(JSON.stringify({ eventType: 'ERROR', payload: {
           operation: eventType, message: 'Wait for the running prompt to finish before switching context' } }));
+        return;
+      }
+      if (contextMutationPending) {
+        ws.send(JSON.stringify({ eventType: 'ERROR', payload: {
+          operation: eventType,
+          message: 'A session or workspace change is still in progress'
+        } }));
         return;
       }
       controllerDeviceId = ws.deviceId;
@@ -1014,7 +1069,18 @@ wss.on('connection', (ws, req) => {
         break;
       }
       case 'PROMPT': {
-        runPrompt(String(payload));
+        if (typeof payload !== 'string' || !payload.trim() || payload.length > 65536) {
+          ws.send(JSON.stringify({ eventType: 'ERROR', payload: {
+            operation: 'PROMPT', message: 'Prompt must contain 1 to 65536 characters' } }));
+          break;
+        }
+        if (promptQueue.length >= MAX_QUEUED_PROMPTS) {
+          ws.send(JSON.stringify({ eventType: 'ERROR', payload: {
+            operation: 'PROMPT', message: 'Prompt queue full' } }));
+          break;
+        }
+        promptQueue.push({ prompt: payload, deviceId: ws.deviceId });
+        void drainPromptQueue();
         break;
       }
       case 'ACCEPT_DIFF': {
@@ -1046,6 +1112,7 @@ wss.on('connection', (ws, req) => {
         break;
       }
       case 'SWITCH_SESSION': {
+        contextMutationPending = true;
         const targetId = String(payload);
         (async () => {
           try {
@@ -1059,7 +1126,7 @@ wss.on('connection', (ws, req) => {
           } catch (e) {
             ws.send(JSON.stringify({ eventType: 'ERROR', payload: { message: `SWITCH_SESSION failed: ${e.message}` } }));
           }
-        })();
+        })().finally(() => { contextMutationPending = false; });
         break;
       }
       case 'FETCH_ALL_SESSIONS': {
@@ -1085,6 +1152,7 @@ wss.on('connection', (ws, req) => {
         break;
       }
       case 'OPEN_SESSION_GLOBAL': {
+        contextMutationPending = true;
         // Opens a session found via FETCH_ALL_SESSIONS, which may belong to
         // a workspace other than activeWorkspace (or one opencode serve
         // isn't currently bound to at all). Reuses OPEN_WORKSPACE's and
@@ -1093,6 +1161,8 @@ wss.on('connection', (ws, req) => {
         // "Selecting a session from the global list".
         const id = payload && payload.id;
         const worktree = payload && payload.worktree;
+        const priorWorkspace = activeWorkspace;
+        const priorSession = ocSessionId;
         (async () => {
           try {
             if (!id || !worktree) {
@@ -1121,12 +1191,24 @@ wss.on('connection', (ws, req) => {
             ws.send(JSON.stringify({ eventType: 'SESSION_OPENED', payload: { id, worktree: resolved } }));
             broadcast('WORKSPACE_LIST', workspaces);
           } catch (e) {
+            // Roll back an unsuccessful workspace/session transition.
+            if (activeWorkspace !== priorWorkspace) {
+              activeWorkspace = priorWorkspace;
+              try {
+                startOpenCodeServer();
+                ocSessionId = priorSession;
+                persistSessionId();
+              } catch (rollbackError) {
+                console.log('  ! failed to restore previous workspace context');
+              }
+            }
             ws.send(JSON.stringify({ eventType: 'ERROR', payload: { message: `OPEN_SESSION_GLOBAL failed: ${e.message}`, operation: 'OPEN_SESSION_GLOBAL' } }));
           }
-        })();
+        })().finally(() => { contextMutationPending = false; });
         break;
       }
       case 'NEW_SESSION': {
+        contextMutationPending = true;
         const title = (payload && payload.title) || undefined;
         (async () => {
           try {
@@ -1141,10 +1223,11 @@ wss.on('connection', (ws, req) => {
           } catch (e) {
             ws.send(JSON.stringify({ eventType: 'ERROR', payload: { message: `NEW_SESSION failed: ${e.message}` } }));
           }
-        })();
+        })().finally(() => { contextMutationPending = false; });
         break;
       }
       case 'FORK_SESSION': {
+        contextMutationPending = true;
         // Confirmed endpoint (PROGRESS.md Phase 0): POST /session/{id}/fork
         const sourceId = String(payload);
         (async () => {
@@ -1160,7 +1243,7 @@ wss.on('connection', (ws, req) => {
           } catch (e) {
             ws.send(JSON.stringify({ eventType: 'ERROR', payload: { message: `FORK_SESSION failed: ${e.message}` } }));
           }
-        })();
+        })().finally(() => { contextMutationPending = false; });
         break;
       }
       case 'PERMISSION_REPLY': {
@@ -1230,7 +1313,73 @@ wss.on('connection', (ws, req) => {
         })().catch(e => console.log(`  ! TERMINAL_RESIZE failed: ${e.message}`));
         break;
       }
+      case 'ROTATE_TOKEN_PREPARE': {
+        const oldKey = ws.deviceTokenKey;
+        const existing = oldKey && Object.hasOwn(deviceTokens, oldKey)
+          ? deviceTokens[oldKey] : null;
+        if (!existing || existing.deviceId !== ws.deviceId) {
+          ws.send(JSON.stringify({ eventType: 'ERROR', payload: {
+            operation: 'ROTATE_TOKEN_PREPARE', message: 'Invalid device credential' } }));
+          break;
+        }
+        try {
+          const nextToken = crypto.randomBytes(32).toString('hex');
+          const nextKey = deviceTokenKey(nextToken);
+          const replacement = Object.assign(Object.create(null), deviceTokens);
+          for (const [key, record] of Object.entries(replacement)) {
+            if (key !== oldKey && record.deviceId === ws.deviceId
+                && record.rotationSupersedes === oldKey) delete replacement[key];
+          }
+          replacement[nextKey] = { ...existing, issuedAt: Date.now(),
+            rotationSupersedes: oldKey };
+          persistDeviceTokens(replacement);
+          deviceTokens = replacement;
+          ws.pendingRotation = { oldKey, nextKey, nextToken };
+          ws.send(JSON.stringify({ eventType: 'TOKEN_ROTATION_PREPARED', payload: {
+            deviceId: ws.deviceId, issuedToken: nextToken } }));
+        } catch (error) {
+          ws.send(JSON.stringify({ eventType: 'ERROR', payload: {
+            operation: 'ROTATE_TOKEN_PREPARE', message: 'Could not stage token rotation' } }));
+        }
+        break;
+      }
+      case 'ROTATE_TOKEN_ACK': {
+        const pending = ws.pendingRotation;
+        if (!pending || pending.oldKey !== ws.deviceTokenKey ||
+            deviceTokens[pending.nextKey]?.deviceId !== ws.deviceId ||
+            deviceTokens[pending.oldKey]?.deviceId !== ws.deviceId) {
+          ws.send(JSON.stringify({ eventType: 'ERROR', payload: {
+            operation: 'ROTATE_TOKEN_ACK', message: 'No pending token rotation' } }));
+          break;
+        }
+        try {
+          const replacement = Object.assign(Object.create(null), deviceTokens);
+          delete replacement[pending.oldKey];
+          const confirmed = { ...replacement[pending.nextKey] };
+          delete confirmed.rotationSupersedes;
+          replacement[pending.nextKey] = confirmed;
+          persistDeviceTokens(replacement);
+          deviceTokens = replacement;
+          ws.deviceToken = pending.nextToken;
+          ws.deviceTokenKey = pending.nextKey;
+          ws.pendingRotation = null;
+          for (const other of clients) {
+            if (other !== ws && other.deviceId === ws.deviceId) {
+              other.authenticated = false;
+              other.close(4001, 'rotated');
+            }
+          }
+          ws.send(JSON.stringify({ eventType: 'TOKEN_ROTATION_COMMITTED', payload: {
+            deviceId: ws.deviceId } }));
+          appendAuditLog('token_rotated', { deviceId: ws.deviceId }, ws);
+        } catch (error) {
+          ws.send(JSON.stringify({ eventType: 'ERROR', payload: {
+            operation: 'ROTATE_TOKEN_ACK', message: 'Could not confirm token rotation' } }));
+        }
+        break;
+      }
       case 'ROTATE_TOKEN': {
+        // Legacy one-step rotation remains for older installed clients.
         const oldKey = ws.deviceTokenKey;
         const existing = oldKey && Object.hasOwn(deviceTokens, oldKey) ? deviceTokens[oldKey] : null;
         if (!existing || existing.deviceId !== ws.deviceId) {
@@ -1273,15 +1422,26 @@ wss.on('connection', (ws, req) => {
         const targetEntry = Object.entries(deviceTokens).find(([, info]) => info.deviceId === targetDeviceId);
         if (targetEntry) {
           const [targetToken] = targetEntry;
-          delete deviceTokens[targetToken];
-          saveDeviceTokens();
+          const replacement = Object.assign(Object.create(null), deviceTokens);
+          for (const [key, info] of Object.entries(replacement)) {
+            if (info.deviceId === targetDeviceId) delete replacement[key];
+          }
+          try {
+            persistDeviceTokens(replacement);
+            deviceTokens = replacement;
+          } catch (error) {
+            ws.send(JSON.stringify({ eventType: 'ERROR', payload: {
+              operation: 'REVOKE_TOKEN', message: 'Could not persist revocation' } }));
+            break;
+          }
+          // Confirm success before closing the revoking controller's socket.
+          ws.send(JSON.stringify({ eventType: 'TOKEN_REVOKED', payload: { deviceId: targetDeviceId } }));
           for (const client of clients) {
-            if (client.deviceTokenKey === targetToken) {
+            if (client.deviceId === targetDeviceId) {
               client.authenticated = false;
               client.close(4001, 'revoked');
             }
           }
-          ws.send(JSON.stringify({ eventType: 'TOKEN_REVOKED', payload: { deviceId: targetDeviceId } }));
         } else {
           ws.send(JSON.stringify({ eventType: 'ERROR', payload: { message: 'Unknown device' } }));
         }

@@ -177,6 +177,8 @@ class RemoteSessionManager(
     // instead of the (possibly now-invalid) pairing secret.
     private val _issuedToken = MutableStateFlow<String?>(null)
     val issuedToken: StateFlow<String?> = _issuedToken.asStateFlow()
+    private val _preparedRotation = MutableStateFlow<TokenRotatedPayload?>(null)
+    val preparedRotation: StateFlow<TokenRotatedPayload?> = _preparedRotation.asStateFlow()
 
     // deviceId from the CONNECTED handshake, when the bridge includes it — the only
     // genuine way to tell which DEVICE_LIST entry is this phone (never guessed from
@@ -284,6 +286,12 @@ class RemoteSessionManager(
                     setPendingDiffs { snapshot.diffs.map { FileDiffDto(it.fileName, it.diffText) } }
                     _pendingPermission.value = snapshot.permissions.firstOrNull { acceptsSession(it.sessionId) }
                     _pendingQuestion.value = snapshot.questions.firstOrNull { acceptsSession(it.sessionId) }
+                }
+                "TOKEN_ROTATION_PREPARED" -> frame.decodePayload<TokenRotatedPayload>(json)?.let {
+                    if (it.deviceId == _currentDeviceId.value &&
+                        it.issuedToken.matches(Regex("[a-f0-9]{64}"))) {
+                        _preparedRotation.value = it
+                    }
                 }
                 "TOKEN_ROTATED" -> frame.decodePayload<TokenRotatedPayload>(json)?.let {
                     if (it.deviceId == _currentDeviceId.value) {
@@ -596,7 +604,17 @@ class RemoteSessionManager(
     fun listDevices() = sendRaw("LIST_DEVICES")
 
     /** Replace this phone's credential without changing another device's token. */
-    fun rotateOwnToken() = sendRaw("ROTATE_TOKEN")
+    fun rotateOwnToken() = sendRaw("ROTATE_TOKEN_PREPARE")
+
+    /** Only call after the replacement was committed to encrypted local storage. */
+    fun acknowledgePreparedRotation(savedToken: String) {
+        val prepared = _preparedRotation.value ?: return
+        if (prepared.issuedToken != savedToken) return
+        token = savedToken
+        _issuedToken.value = savedToken
+        _preparedRotation.value = null
+        sendRaw("ROTATE_TOKEN_ACK")
+    }
 
     /** Release the single-controller lease so another paired device may mutate state. */
     fun releaseControl() = sendRaw("RELEASE_CONTROL")

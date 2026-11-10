@@ -188,3 +188,71 @@ test('session id persists across a bridge restart in the same workspace', async 
     await stopBridge(child2);
   }
 });
+test('concurrent NEW_SESSION mutations are admitted one at a time', async () => {
+  const { child, port, token, ocPort } = await startWithFakeOpencode();
+  try {
+    const { ws } = await connectAndAuth(port, token);
+    try {
+      ws.send(JSON.stringify({ eventType: 'NEW_SESSION', payload: { title: 'first' } }));
+      ws.send(JSON.stringify({ eventType: 'NEW_SESSION', payload: { title: 'second' } }));
+      let switched = null;
+      let rejected = null;
+      for (let i = 0; i < 20 && (!switched || !rejected); i++) {
+        const frame = await nextMessageOrTimeoutSafe(ws, 1000);
+        if (frame?.eventType === 'SESSION_SWITCHED') switched = frame.payload;
+        if (frame?.eventType === 'ERROR' && frame.payload.operation === 'NEW_SESSION') {
+          rejected = frame.payload;
+        }
+      }
+      assert.ok(switched, 'first session creation should finish');
+      assert.ok(rejected, 'overlapping session mutation must be rejected');
+      const res = await fetch(`http://127.0.0.1:${ocPort}/session`);
+      const list = await res.json();
+      assert.equal(list.length, 1, 'rejected operation must not create a second session');
+    } finally { ws.close(); }
+  } finally { await stopBridge(child); }
+});
+
+test('failed global session switch restores original workspace and session', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'bridge-session-rollback-'));
+  const target = path.join(root, 'target');
+  fs.mkdirSync(target);
+  const port = 30000 + Math.floor(Math.random() * 2000);
+  const ocPort = 32000 + Math.floor(Math.random() * 2000);
+  const token = 'rollback-test';
+  const child = startBridge(port, token, root, {
+    OPCODE: FAKE_OPENCODE,
+    OC_SERVE_PORT: String(ocPort),
+    FAKE_OPENCODE_STATE_FILE: path.join(root, 'fake-sessions.json')
+  });
+  try {
+    await waitForPort(port);
+    const { ws } = await connectAndAuth(port, token);
+    try {
+      ws.send(JSON.stringify({ eventType: 'NEW_SESSION', payload: { title: 'keep' } }));
+      let original = null;
+      for (let i = 0; i < 20 && !original; i++) {
+        const frame = await nextMessageOrTimeoutSafe(ws, 1000);
+        if (frame?.eventType === 'SESSION_SWITCHED') original = frame.payload.id;
+      }
+      assert.ok(original, 'expected a valid original session');
+      ws.send(JSON.stringify({ eventType: 'OPEN_SESSION_GLOBAL', payload: {
+        id: 'ses_missing', worktree: target
+      } }));
+      let error = null;
+      for (let i = 0; i < 20 && !error; i++) {
+        const frame = await nextMessageOrTimeoutSafe(ws, 1000);
+        if (frame?.eventType === 'ERROR') error = frame.payload;
+      }
+      assert.match(error?.message || '', /OPEN_SESSION_GLOBAL failed/);
+      ws.send(JSON.stringify({ eventType: 'FETCH_RUNTIME_STATE' }));
+      let snapshot = null;
+      for (let i = 0; i < 20 && !snapshot; i++) {
+        const frame = await nextMessageOrTimeoutSafe(ws, 1000);
+        if (frame?.eventType === 'RUNTIME_STATE') snapshot = frame.payload;
+      }
+      assert.equal(snapshot?.workspace, root);
+      assert.equal(snapshot?.sessionId, original);
+    } finally { ws.close(); }
+  } finally { await stopBridge(child); }
+});

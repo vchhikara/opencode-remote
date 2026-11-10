@@ -33,6 +33,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.produceState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.Role
@@ -80,6 +81,8 @@ import com.opencode.remote.ui.theme.OcMotion
 import com.opencode.remote.ui.theme.OcType
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 /**
  * The redesigned main application: one Home surface plus a drawer, replacing the old
@@ -100,6 +103,7 @@ fun MainShell(
     val drawerState = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
     val issuedToken by sessionManager.issuedToken.collectAsStateWithLifecycle()
+    val preparedRotation by sessionManager.preparedRotation.collectAsStateWithLifecycle()
     val connectionState by sessionManager.connectionState.collectAsStateWithLifecycle()
 
     // Task 8.1 close-the-loop (carried over from the old dashboard): when the bridge
@@ -108,8 +112,23 @@ fun MainShell(
     LaunchedEffect(issuedToken) {
         val fresh = issuedToken ?: return@LaunchedEffect
         tokenStorage.getLastCredentials()?.let { creds ->
-            tokenStorage.saveCredentials(creds.host, creds.port, fresh, creds.deviceName, creds.scheme)
+            withContext(Dispatchers.IO) {
+                tokenStorage.saveCredentials(creds.host, creds.port, fresh, creds.deviceName, creds.scheme)
+            }
         }
+    }
+
+    // Confirm rotation only after encrypted storage has durably committed.
+    LaunchedEffect(preparedRotation?.issuedToken) {
+        val prepared = preparedRotation ?: return@LaunchedEffect
+        val saved = withContext(Dispatchers.IO) {
+            tokenStorage.getLastCredentials()?.let { creds ->
+                tokenStorage.saveCredentials(
+                    creds.host, creds.port, prepared.issuedToken, creds.deviceName, creds.scheme
+                )
+            } ?: false
+        }
+        if (saved) sessionManager.acknowledgePreparedRotation(prepared.issuedToken)
     }
 
     // Reconnect-on-resume (Task 7.2.1, carried over): re-drive connect() on every
@@ -132,7 +151,11 @@ fun MainShell(
     }
 
     val isDark = Oc.colors.isDark
-    val credentials = remember { tokenStorage.getLastCredentials() }
+    val credentials by produceState<TokenStorage.Credentials?>(
+        initialValue = null, tokenStorage
+    ) {
+        value = withContext(Dispatchers.IO) { tokenStorage.getLastCredentials() }
+    }
     val backStackEntry by navController.currentBackStackEntryAsState()
     val current = Destination.fromRoute(backStackEntry?.destination?.route) ?: Destination.Home
 

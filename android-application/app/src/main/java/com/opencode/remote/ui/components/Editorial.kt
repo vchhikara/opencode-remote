@@ -44,6 +44,7 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.input.TextFieldValue
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
@@ -254,7 +255,8 @@ fun OcTextField(
     minHeight: Dp = 46.dp,
     enabled: Boolean = true,
     keyboardOptions: KeyboardOptions = KeyboardOptions.Default,
-    keyboardActions: KeyboardActions = KeyboardActions.Default
+    keyboardActions: KeyboardActions = KeyboardActions.Default,
+    visualTransformation: VisualTransformation = VisualTransformation.None
 ) {
     val c = Oc.colors
     val source = remember { MutableInteractionSource() }
@@ -273,6 +275,7 @@ fun OcTextField(
         maxLines = maxLines,
         keyboardOptions = keyboardOptions,
         keyboardActions = keyboardActions,
+        visualTransformation = visualTransformation,
         interactionSource = source,
         decorationBox = { inner ->
             Box(Modifier.padding(horizontal = 13.dp, vertical = 12.dp), contentAlignment = Alignment.CenterStart) {
