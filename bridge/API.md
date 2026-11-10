@@ -118,14 +118,17 @@ Bare string task id. Aborts the in-flight prompt generation server-side, removes
 ### `LIST_DEVICES`
 No payload. Replies `DEVICE_LIST` (never includes raw tokens).
 
-### `ROTATE_TOKEN`
-No payload. Authenticated controller may replace its own per-device token. Replies `TOKEN_ROTATED` containing `deviceId` and a fresh `issuedToken`; the old token is invalidated and the Android client must persist the replacement immediately. A failure to persist the new verifier returns `ERROR` and the old token remains valid. This is not a two-phase acknowledged rotation.
+### `ROTATE_TOKEN_PREPARE` and `ROTATE_TOKEN_ACK`
+The authenticated controller sends `ROTATE_TOKEN_PREPARE` without payload. The bridge persists the staged verifier but keeps the previous token valid and replies `TOKEN_ROTATION_PREPARED` with a new `issuedToken` and `deviceId`. The client must durably store the replacement before sending `ROTATE_TOKEN_ACK`, which invalidates the old token and returns `TOKEN_ROTATION_COMMITTED`. Reconnecting with a staged replacement token after a crash confirms the rotation automatically.
+
+### `ROTATE_TOKEN` (legacy)
+No payload. Older clients may rotate in one step and receive `TOKEN_ROTATED`, immediately invalidating the old token. This legacy path is not crash safe; updated Android clients use the two-phase protocol.
 
 ### `REVOKE_TOKEN`
 ```json
 { "eventType": "REVOKE_TOKEN", "payload": "deviceId" }
 ```
-Bare string device id (not the token itself). Deletes that device's token, force-closes any of its open sockets (code `4001`). Replies `TOKEN_REVOKED` or `ERROR` ("Unknown device").
+Bare string device id (not the token itself). Atomically removes all verifiers (including staged replacements) for that device, replies `TOKEN_REVOKED` and force-closes its open sockets (code `4001`). A persistence failure replies `ERROR` and preserves the old verifier.
 
 ### `FETCH_AUDIT_LOG`
 No payload. Replies `AUDIT_LOG` with up to the last 200 entries.
