@@ -17,12 +17,12 @@ Full design rationale is in [ADR 0001](adr/0001-per-device-tokens.md); the short
 
 - The bridge starts with a **pairing secret** (`BRIDGE_TOKEN`, random 32-byte hex by default), printed as a QR code. The secret expires after 120 seconds or after one successful pairing by default. Both limits are configurable with `PAIRING_WINDOW_MS` and `PAIRING_MAX_DEVICES`. A restart opens a new window, so avoid reusing an explicit static `BRIDGE_TOKEN`.
 - The first device to present it in `CONNECT` gets a **per-device token**, persisted server-side (`DEVICE_STORE_PATH`) and used for all future connections instead of the pairing secret.
-- Devices can be individually revoked (`REVOKE_TOKEN`) or rotate their own token (`ROTATE_TOKEN`). A rotation replaces the SHA-256 verifier and invalidates the previous bearer; the requesting Android client persists the replacement. A crash before saving it may require a new pairing.
+- Devices can be revoked (`REVOKE_TOKEN`). Updated Android clients rotate credentials in two phases (`ROTATE_TOKEN_PREPARE`, durable local save, `ROTATE_TOKEN_ACK`), with reconnect recovery after a crash. The legacy one-phase `ROTATE_TOKEN` remains available to older clients and is not crash safe.
 - Approved operations (permission decisions, terminal commands, git commands) are attributed to a `deviceId`/`deviceName` in an audit log (`AUDIT_LOG_PATH`, JSON-lines, retrievable via `FETCH_AUDIT_LOG`). Terminal text is represented by a hash and length, git arguments and question-answer content are omitted; raw command secrets should not be persisted in the audit log.
 
 ### What this model does *not* provide (from ADR 0001's "Not solved by this decision")
 
-- **No automatic expiry or scheduled rotation.** A per-device token remains valid until manually revoked or rotated. Manual rotation is implemented, but no crash-safe two-phase acknowledgement/recovery mechanism exists.
+- **No automatic expiry or scheduled rotation.** A per-device token remains valid until manually revoked or rotated. Updated Android clients use crash-recoverable two-phase rotation, but the legacy single-step protocol remains available to older clients.
 - **No transport-level device identity.** There's no mTLS or client-certificate verification; device identity is a bearer token at the application layer. A token that leaks off-device is fully usable by whoever holds it until revoked.
 - **Limited anti-abuse controls.** A peer IP producing 10 failed authentication attempts in a 60-second window is temporarily rejected (close code `4008`). This is not distributed rate limiting; it does not stop multiple IPs or upstream network saturation. Pairing comparisons use constant time.
 - **`DEVICE_STORE_PATH` is a private JSON file** on the bridge host. It stores SHA-256 token verifiers and device metadata, not bearer tokens. Existing raw-token-key stores are migrated automatically at startup. File mode 0600 is enforced; a privileged local user or malicious process with write access can still tamper with the authorization store. A SHA-256 verifier does not protect against a stolen bearer token from a phone or network trace.
@@ -33,10 +33,11 @@ This is a deliberate, documented trade-off (see ADR 0001's "Alternatives conside
 
 ## Shared-state ownership
 
-The bridge still uses one mutable workspace, OpenCode process/session and PTY across paired devices. A **single-device controller lease** now rejects concurrent mutations by other authenticated devices, and a controller can issue `RELEASE_CONTROL` while idle. Other paired devices can still observe state. This is interim contention prevention, not per-device session isolation or multi-user authorization.
+The bridge still uses one mutable workspace, OpenCode process/session and PTY across paired devices. A **single-device controller lease** rejects mutations from other authenticated devices, serializes same-device prompts and blocks overlapping asynchronous session switches. A controller can issue `RELEASE_CONTROL` while idle. Other paired devices can still observe state. This is interim contention prevention, not per-device session isolation or multi-user authorization.
 
 ## Recommended deployment
 
+- Android now permits plaintext `ws://` only for local/private host strings (including RFC1918 and CGNAT/Tailscale IPv4 ranges). Public hostnames and routable addresses require `wss://`. Private-address classification is not network trust verification; DNS rebinding and hostile local networks remain risks.
 - The default `BRIDGE_HOST=0.0.0.0` listens on all interfaces. Bind to `127.0.0.1` when behind a local proxy, or restrict inbound traffic using a host firewall. Never expose the bridge directly to the public internet.
 - Run the bridge only on networks you trust (your home LAN), or reach it from outside your LAN via a private tunnel (Tailscale or Cloudflare Tunnel) rather than by exposing the WebSocket port directly to the public internet. See [`bridge/README.md`](bridge/README.md) for setup of both.
 - Treat a leaked pairing-secret QR code the same as a leaked password: rotate `BRIDGE_TOKEN` (restart the bridge with a new value or let it generate a fresh random one) before pairing another device.
